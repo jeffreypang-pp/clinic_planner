@@ -31,13 +31,21 @@ no files, a sample clinic is loaded (unsaved until you save it).
 
 ## Password protection
 
-One shared password protects the app (`clinic/auth.py`). Set it in the environment, so it is never committed:
+One shared password protects the app (`clinic/auth.py`). Keep it in a **`.env` file** in the project folder, which git and
+Vercel both ignore, so it is never committed:
 
 ```bash
-CLINIC_PASSWORD='something long' python -m clinic.server     # locally
+cp .env.example .env        # then edit .env and set CLINIC_PASSWORD=...
+python -m clinic.server     # reads .env at startup and prints which settings it used (never their values)
 ```
 
-On Vercel set `CLINIC_PASSWORD` in Project Settings → Environment Variables and redeploy.
+`.env` is read from the current directory, else the project root (or pass `--env-file path`). One `KEY=value` per line;
+`#` comments, `export KEY=...`, and `'single'` / `"double"` quotes are fine (quote a password containing `#` or spaces).
+Only `CLINIC_*` settings are read, an empty value counts as "not set", and a variable already set in the real environment
+wins over the file. Other settings work the same way: `CLINIC_SESSION_HOURS`, `CLINIC_SECRET`, `CLINIC_REQUIRE_PASSWORD`.
+
+**On Vercel the `.env` file is not deployed** (`.vercelignore`): set `CLINIC_PASSWORD` under Project Settings →
+Environment Variables and redeploy.
 
 * **Every API call needs a login**, so no clinic data is served without one. The page itself contains no data; it just shows
   a login screen first (and requests nothing until you are in).

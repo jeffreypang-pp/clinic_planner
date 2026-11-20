@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .auth import Auth, denied, handle_auth_route, mode_info
+from .env import load_dotenv
 from .lists import TreatmentLists
 from .model import Clinic, ClinicError, Conflict, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
@@ -314,13 +315,20 @@ def main() -> None:
     ap.add_argument("--data", default="clinic_data", help="directory holding the 3 data files")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--env-file", default=None,
+                    help="read CLINIC_* settings (e.g. CLINIC_PASSWORD) from this file instead of ./.env")
     ap.add_argument("--stateless", action="store_true",
                     help="serve the stateless API used on Vercel: the browser keeps the working data, "
                          "the server never writes files (--data is then read-only)")
     args = ap.parse_args()
+    env_file, applied = load_dotenv(args.env_file)
+    if args.env_file and env_file is None:
+        ap.error(f"--env-file {args.env_file}: no such file")
+    if env_file:
+        print(f"Settings from {env_file}: {', '.join(applied) if applied else 'nothing new'}")
     auth = Auth.from_env()
     print("Password protection:", "ON (CLINIC_PASSWORD)" if auth.enabled else
-          "OFF (set CLINIC_PASSWORD to require a login)")
+          "OFF (put CLINIC_PASSWORD=... in .env to require a login)")
     if args.stateless:
         print(f"Clinic planner (stateless, like Vercel) on http://{args.host}:{args.port}  (read-only data: {args.data})")
         handler = make_handler(None, stateless_dir=args.data, auth=auth)
