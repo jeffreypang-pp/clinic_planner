@@ -4,12 +4,64 @@
     {
       "id": "asia_square",
       "name": "Asia Square",
-      "rooms": []
+      "rooms": [
+        {
+          "id": "asia_square_body_machine",
+          "name": "BODY_MACHINE",
+          "equipment": ["body_machine"]
+        },
+        {
+          "id": "asia_square_staff_intensive_d",
+          "name": "STAFF_INTENSIVE_D",
+          "equipment": ["staff_intensive_d"]
+        },
+        {
+          "id": "asia_square_clarity_room",
+          "name": "CLARITY_ROOM",
+          "equipment": ["clarity_room"]
+        },
+        {
+          "id": "asia_square_pico_machine",
+          "name": "PICO_MACHINE",
+          "equipment": ["pico_machine"]
+        },
+        {
+          "id": "asia_square_ultherapy_machine",
+          "name": "ULTHERAPY_MACHINE",
+          "equipment": ["ultherapy_machine"]
+        },
+        {
+          "id": "asia_square_ultraformer_machine",
+          "name": "ULTRAFORMER_MACHINE",
+          "equipment": ["ultraformer_machine"]
+        }
+      ]
     },
     {
       "id": "orchard",
       "name": "Orchard",
-      "rooms": []
+      "rooms": [
+        {
+          "id": "orchard_ultherapy_prime_machine",
+          "name": "ULTHERAPY_PRIME_MACHINE",
+          "equipment": ["ultherapy_prime_machine"]
+        },
+        {
+          "id": "orchard_curas_machine",
+          "name": "CURAS_MACHINE",
+          "equipment": ["curas_machine"]
+        },
+        {
+          "id": "orchard_hydrafacial_machine",
+          "name": "HYDRAFACIAL_MACHINE",
+          "equipment": ["hydrafacial_machine"]
+        },
+        {
+          "id": "orchard_onda_machine",
+          "name": "ONDA_MACHINE",
+          "equipment": ["onda_machine"]
+        }
+      ]
     }
   ],
   "doctors": [
