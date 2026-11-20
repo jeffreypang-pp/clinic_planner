@@ -63,17 +63,20 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 ## UI tabs
 
 * **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min
-  (free, booked, away at another location, not in any location today, closed, blocked).
+  (free, booked per step, away at another location, not in any location today, closed, blocked).
+  **This is where you book.** The **Add treatments** panel beside the grid takes treatments one after another:
+  pick a treatment and start time (or click a free cell to use that time), press **Book next**, and the grid updates so you can
+  watch how rooms, doctors and staff fill up (the latest booking is ringed). A treatment that can't be carried out is reported
+  with the reasons and nothing is booked for it. **Book all** goes down the list and stops at the first treatment that can't be
+  carried out; **Check all** is a dry run; a booked row can be cancelled to try something else.
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
-  Click a free cell to check availability from that time.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
   **Clear day…**: cancels every booking and removes every blocked time for this location on this date
   (rooms here, plus doctors/staff ticked in here), after showing what will go and asking to confirm.
   Tick boxes are left alone, and like all edits it only changes memory until you Save…
-* **Availability & booking** - the **Booking list** (add treatments with proposed start times; *Check list* is a dry run,
-  *Book list* books until the first failure), and a single-treatment check: free staff per step, doctors, rooms, or why not;
-  "find open slots" for the day; book with auto-assignment.
+* **Availability check** - look-up only: choose treatment / location (or all) / start time to see the free staff per step,
+  doctors and rooms, or why not; "find open slots" for the day; *Add to Timetable* sends a result to the booking panel.
 * **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
   a form to set a location across a date range / weekdays, and the day's bookings (cancel here).
 * **Setup & save** - edit opening hours per weekday; edit each of the three data files as JSON
