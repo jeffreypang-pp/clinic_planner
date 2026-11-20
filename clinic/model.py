@@ -19,8 +19,8 @@ Booking    - a treatment at a location/date/start using 1 doctor, N staff, 1 roo
 
 Data is stored as three groups (three JSON files), by how often they change:
   resources - locations, rooms (+equipment), doctors, staff        (rarely)
-  planning  - opening hours, treatments, doctor skills, presence   (regularly)
-  schedule  - bookings and blocked times                           (constantly)
+  planning  - opening hours, treatments, doctor skills             (regularly)
+  schedule  - presence (who is where each day), blocks, bookings   (constantly)
 """
 from __future__ import annotations
 
@@ -669,10 +669,10 @@ class Clinic:
                 "date_overrides": {l["id"]: l["date_overrides"] for l in d["locations"]},
                 "treatments": d["treatments"],
                 "doctor_skills": {x["id"]: x["treatments"] for x in d["doctors"]},
-                "presence": d["presence"],
             },
             "schedule": {
                 "version": FORMAT_VERSION,
+                "presence": d["presence"],
                 "blocks": d["blocks"],
                 "bookings": d["bookings"],
             },
@@ -698,6 +698,12 @@ class Clinic:
         unknown = set(skills) - {d.get("id") for d in res.get("doctors", [])}
         if unknown:
             raise ClinicError(f"planning.doctor_skills refers to unknown doctor(s) {sorted(unknown)}")
+        # presence used to live in planning.json; still accept it there (it is moved to
+        # schedule.json the next time the clinic is saved) but never silently drop or mix it
+        presence, old_presence = sched.get("presence") or {}, plan.get("presence") or {}
+        if presence and old_presence:
+            raise ClinicError("presence is in both planning.json and schedule.json; "
+                              "it now belongs in schedule.json only")
         return cls.from_dict({
             "locations": [dict(l, opening_hours=hours.get(l.get("id")) or {},
                                date_overrides=overrides.get(l.get("id")) or {})
@@ -705,7 +711,7 @@ class Clinic:
             "treatments": plan.get("treatments", []),
             "doctors": [dict(d, treatments=skills.get(d.get("id")) or []) for d in res.get("doctors", [])],
             "staff": res.get("staff", []),
-            "presence": plan.get("presence", {}),
+            "presence": presence or old_presence,
             "blocks": sched.get("blocks", []),
             "bookings": sched.get("bookings", []),
         })

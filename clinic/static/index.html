@@ -473,8 +473,8 @@ async function viewSetup() {
       </div></div>`;
   const GROUPS = {
     resources: ["1 · Resources", "resources.json", "Locations, rooms (with their equipment), doctors and staff. Changes rarely."],
-    planning: ["2 · Planning", "planning.json", "Opening hours, one-off date overrides, treatments, doctor skills, and who is in which location each day (presence). Changes regularly."],
-    schedule: ["3 · Bookings & blocks", "schedule.json", "Bookings, and blocked times for doctors, staff and rooms. Changes constantly."],
+    planning: ["2 · Planning", "planning.json", "Opening hours, one-off date overrides, treatments and doctor skills. Changes regularly."],
+    schedule: ["3 · Schedule", "schedule.json", "Presence (which location each doctor/staff member is in each day), blocked times for doctors, staff and rooms, and bookings. Changes constantly."],
   };
   const pretty = o => JSON.stringify(o, null, 2).replace(/\[\s+([^\[\]{}]*?)\s+\]/g, (m, inner) => "[" + inner.replace(/,\s+/g, ", ") + "]");
   const fillJson = () => {

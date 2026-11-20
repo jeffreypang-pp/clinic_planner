@@ -12,8 +12,8 @@ python -m unittest discover -s tests -t .
 | File | Changes | Contains |
 |---|---|---|
 | `resources.json` | rarely | locations, **rooms** (with equipment) per location, **doctors**, **staff** |
-| `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills**, **presence** (who is in which location each day) |
-| `schedule.json` | constantly | **bookings** and **blocked times** (per doctor / staff member / room) |
+| `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills** |
+| `schedule.json` | constantly | **presence** (who is in which location each day), **blocked times** (per doctor / staff member / room), **bookings** |
 
 Every action in the app saves immediately, and only the file(s) whose content changed are rewritten,
 so `resources.json` stays untouched in git when you only make bookings. The files reference each other by id
@@ -29,7 +29,7 @@ and are validated together on load/save. If `clinic_data/` has no files, a sampl
 | Treatment | Duration (multiple of 15 min), required equipment, number of staff (0+). |
 | Doctor | Has a set of treatments they can perform (skills). Needed for the whole treatment. |
 | Staff | Interchangeable: any free, present staff member can assist any treatment. |
-| Presence | Per **day**, a doctor/staff member is at **one location or none** (the tick box). Stored as `presence[date][doctors\|staff][id] = location_id`, so "at most one location per day" holds by construction. Once present they are **free all day unless booked or blocked**. |
+| Presence | Per **day**, a doctor/staff member is at **one location or none** (the tick box). Stored in `schedule.json` as `presence[date][doctors\|staff][id] = location_id`, so "at most one location per day" holds by construction. Once present they are **free all day unless booked or blocked**. |
 | Block | A time span on a date when a doctor, staff member or room can't be used (lunch, leave, maintenance). Optional. |
 | Booking | Treatment + location + date + start; uses 1 doctor, N staff, 1 room for its full duration. |
 

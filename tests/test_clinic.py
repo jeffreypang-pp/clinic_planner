@@ -329,11 +329,12 @@ class GroupTests(unittest.TestCase):
         self.assertEqual(set(res), {"version", "locations", "doctors", "staff"})
         self.assertEqual(set(res["locations"][0]), {"id", "name", "rooms"})
         self.assertEqual(set(res["doctors"][0]), {"id", "name"})
-        # group 2: hours, treatments, skills, who is where each day
+        # group 2: hours, treatments, skills
         self.assertEqual(set(plan), {"version", "opening_hours", "date_overrides", "treatments",
-                                     "doctor_skills", "presence"})
-        # group 3: bookings and blocked times
-        self.assertEqual(set(sched), {"version", "blocks", "bookings"})
+                                     "doctor_skills"})
+        # group 3: who is where each day, blocked times, bookings
+        self.assertEqual(set(sched), {"version", "presence", "blocks", "bookings"})
+        self.assertTrue(sched["presence"])
 
     def test_groups_roundtrip(self):
         g = self.c.to_groups()
@@ -352,7 +353,7 @@ class GroupTests(unittest.TestCase):
         with self.assertRaises(ClinicError):
             Clinic.from_groups(bad)
         bad = json.loads(json.dumps(g))
-        bad["planning"]["presence"] = {"2026-11-23": {"doctors": {"lim": "nowhere"}}}
+        bad["schedule"]["presence"] = {"2026-11-23": {"doctors": {"lim": "nowhere"}}}
         with self.assertRaises(ClinicError):
             Clinic.from_groups(bad)
         bad = json.loads(json.dumps(g))
@@ -371,8 +372,11 @@ class GroupTests(unittest.TestCase):
             # a booking change touches only schedule.json
             self.c.set_blocked("room", "central_laser_a", date(2026, 11, 23), t("10:00"), t("11:00"), True)
             self.assertEqual(self.c.save_dir(d), ["schedule.json"])
-            # a roster tick touches only planning.json
+            # a roster tick touches only schedule.json too (presence lives there)
             self.c.set_presence("staff", "s1", date(2026, 11, 23), None)
+            self.assertEqual(self.c.save_dir(d), ["schedule.json"])
+            # a treatment/skill/hours change touches only planning.json
+            self.c.set_opening_hours("central", {0: (t("08:00"), t("19:00"))})
             self.assertEqual(self.c.save_dir(d), ["planning.json"])
             # adding a staff member touches only resources.json
             data = self.c.to_dict()
@@ -380,6 +384,16 @@ class GroupTests(unittest.TestCase):
             Clinic.from_dict(data).save_dir(d)
             with open(os.path.join(d, "resources.json")) as f:
                 self.assertIn("New", f.read())
+
+    def test_presence_in_planning_is_migrated_not_lost(self):
+        g = json.loads(json.dumps(self.c.to_groups()))
+        g["planning"]["presence"] = g["schedule"].pop("presence")      # old layout
+        migrated = Clinic.from_groups(g)
+        self.assertEqual(migrated.to_dict(), self.c.to_dict())
+        self.assertNotIn("presence", migrated.to_groups()["planning"])  # rewritten in the new place
+        g["schedule"]["presence"] = self.c.to_groups()["schedule"]["presence"]  # in both -> refuse
+        with self.assertRaises(ClinicError):
+            Clinic.from_groups(g)
 
     def test_json_files_are_human_friendly(self):
         with tempfile.TemporaryDirectory() as tmp:
