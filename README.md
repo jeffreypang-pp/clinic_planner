@@ -29,6 +29,38 @@ an explicit overwrite, and **Reload from disk** picks up the pulled version. Fil
 touched by a save. The files reference each other by id and are validated together. If `clinic_data/` has
 no files, a sample clinic is loaded (unsaved until you save it).
 
+## Deploying to Vercel
+
+The repo is ready to import into Vercel as-is (`vercel.json`, `public/index.html`, `api/*.py`; standard library only,
+so there is nothing to install or build):
+
+```bash
+npm i -g vercel
+vercel          # preview deployment; `vercel --prod` for production
+```
+
+or push to GitHub and "Import Project" in the Vercel dashboard (leave the framework as *Other*; `vercel.json` sets the rest).
+
+**Vercel has no long-running server and no writable disk**, so the deployment runs in *stateless mode*
+(`clinic/stateless.py`) instead of keeping the data in server memory and writing files:
+
+* The **browser holds your working data** (and keeps it in `localStorage`, so it survives a reload) and sends it with each
+  request; three small Python functions (`api/mode.py`, `api/initial.py`, `api/call.py`) run exactly the same model code and
+  send the result back. The server stores nothing.
+* The files in `clinic_data/` are the **read-only starting point** shipped with each deployment.
+* **Save (download)…** (confirmed every time) can't write to your repository, so it **downloads the changed files**
+  (`resources.json`, `planning.json`, `schedule.json`). Put them in `clinic_data/` and commit; pushing redeploys with the new data.
+  If a newer deployment's data differs from what your browser started from, the bar shows `⚠ Newer data deployed`, saving over
+  it is refused unless you confirm, and **Reload deployed data** picks it up.
+* **Saved treatment lists** live in the browser only (per browser, not shared). A committed `clinic_data/treatment_lists.json`
+  is loaded as the starting set.
+* Each request carries the working data (well under Vercel's 4.5 MB request limit for a clinic this size).
+
+**Privacy:** `clinic_data/` is served to anyone who can open the site (staff and doctor names, bookings, ...). Turn on
+*Deployment Protection* (Vercel Authentication or a password) for the project before putting real data there.
+
+Try the Vercel behaviour locally without Vercel: `python -m clinic.server --stateless` (serves the same API and page).
+
 ## Model (`clinic/model.py`)
 
 | Concept | Notes |

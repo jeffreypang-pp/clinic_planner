@@ -119,3 +119,18 @@ class TreatmentLists:
                 "room_id": room_id, "doctor_id": doctor_id,
                 "start": format_slot(parse_time(start)),
                 "client": str(item.get("client") or "").strip()[:200]}
+
+
+class MemoryLists(TreatmentLists):
+    """The same lists and rules, kept in a dict that the caller stores (the browser, in the
+    stateless/Vercel deployment) instead of a file on disk."""
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.path = "browser storage"
+        self.data = dict(data or {})
+
+    def _read(self) -> dict:
+        return dict(self.data)
+
+    def _write(self, lists: dict) -> None:
+        self.data = lists

@@ -1,6 +1,7 @@
 """Tiny stdlib HTTP server: JSON API + the single-page UI.
 
     python -m clinic.server [--data clinic_data] [--port 8000]
+    python -m clinic.server --stateless      # same API as the Vercel deployment (see clinic/stateless.py)
 
 Nothing is written to disk until you explicitly save (POST /api/save, behind a confirmation in
 the UI).  Changes live in memory; the three JSON files (resources.json, planning.json,
@@ -23,7 +24,8 @@ from .lists import TreatmentLists
 from .model import Clinic, ClinicError, Conflict, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
-STATIC = Path(__file__).parent / "static"
+ROOT = Path(__file__).resolve().parent.parent
+STATIC = ROOT / "public"   # the page; Vercel serves this folder as static files too
 
 
 class App:
@@ -228,7 +230,31 @@ ROUTES = [
 ]
 
 
-def make_handler(app: App):
+def dispatch(app: "App", method: str, path: str, query: dict, body) -> tuple[int, dict]:
+    """Run one API request against ``app``; returns ``(http_status, json_payload)``.
+    Shared by the local server and the stateless (Vercel) functions."""
+    for m, pattern, name in ROUTES:
+        match = re.fullmatch(pattern, path)
+        if m == method and match:
+            break
+    else:
+        return 404, {"error": f"No route {method} {path}"}
+    try:
+        with app.lock:
+            return 200, getattr(app, name)(query, body, *match.groups())
+    except NotFound as e:
+        return 404, {"error": str(e)}
+    except Conflict as e:
+        return 409, {"error": str(e)}
+    except ClinicError as e:
+        return 400, {"error": str(e)}
+    except Exception as e:  # pragma: no cover - surfaced to the UI for a prototype
+        return 500, {"error": f"{type(e).__name__}: {e}"}
+
+
+def make_handler(app: App | None, stateless_dir: str | None = None):
+    """HTTP handler for the local server.  With ``stateless_dir`` it serves the stateless API
+    (/api/mode, /api/initial, /api/call) instead of the stateful one, exactly like Vercel."""
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet
             pass
@@ -246,31 +272,19 @@ def make_handler(app: App):
             url = urlparse(self.path)
             if method == "GET" and url.path in ("/", "/index.html"):
                 return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
-            for m, pattern, name in ROUTES:
-                match = re.fullmatch(pattern, url.path)
-                if m == method and match:
-                    break
-            else:
-                return self._send(404, {"error": f"No route {method} {url.path}"})
-            try:
-                body = None
-                if method in ("POST", "PUT"):
-                    raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                    try:
-                        body = json.loads(raw or b"{}")
-                    except json.JSONDecodeError as e:
-                        raise ClinicError(f"Invalid JSON: {e}") from None
-                with app.lock:
-                    result = getattr(app, name)(parse_qs(url.query), body, *match.groups())
-                self._send(200, result)
-            except NotFound as e:
-                self._send(404, {"error": str(e)})
-            except Conflict as e:
-                self._send(409, {"error": str(e)})
-            except ClinicError as e:
-                self._send(400, {"error": str(e)})
-            except Exception as e:  # pragma: no cover - surfaced to the UI for a prototype
-                self._send(500, {"error": f"{type(e).__name__}: {e}"})
+            raw = b""
+            if method in ("POST", "PUT"):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if stateless_dir is not None:
+                from .stateless import serve
+                return self._send(*serve(method, url.path, raw, stateless_dir))
+            body = None
+            if method in ("POST", "PUT"):
+                try:
+                    body = json.loads(raw or b"{}")
+                except json.JSONDecodeError as e:
+                    return self._send(400, {"error": f"Invalid JSON: {e}"})
+            self._send(*dispatch(app, method, url.path, parse_qs(url.query), body))
 
         def do_GET(self): self._dispatch("GET")
         def do_POST(self): self._dispatch("POST")
@@ -285,10 +299,17 @@ def main() -> None:
     ap.add_argument("--data", default="clinic_data", help="directory holding the 3 data files")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--stateless", action="store_true",
+                    help="serve the stateless API used on Vercel: the browser keeps the working data, "
+                         "the server never writes files (--data is then read-only)")
     args = ap.parse_args()
-    app = App(args.data)
-    print(f"Clinic planner on http://{args.host}:{args.port}  (data: {args.data})")
-    ThreadingHTTPServer((args.host, args.port), make_handler(app)).serve_forever()
+    if args.stateless:
+        print(f"Clinic planner (stateless, like Vercel) on http://{args.host}:{args.port}  (read-only data: {args.data})")
+        handler = make_handler(None, stateless_dir=args.data)
+    else:
+        print(f"Clinic planner on http://{args.host}:{args.port}  (data: {args.data})")
+        handler = make_handler(App(args.data))
+    ThreadingHTTPServer((args.host, args.port), handler).serve_forever()
 
 
 if __name__ == "__main__":

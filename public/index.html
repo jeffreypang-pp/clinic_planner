@@ -144,7 +144,7 @@
 <script>
 const TABS = [["timetable", "Timetable"], ["availability", "Availability check"],
               ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
-const S = { list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
+const S = { stateless: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
@@ -164,12 +164,52 @@ const describeSteps = t => t.doctor_minutes === 0
 const STEP_TAG = { numbing: " · numbing", doctor: "", staff: " · staff tx", all: "" };
 const locs = () => S.clinic.locations;
 
-async function api(method, path, body) {
+async function rawFetch(method, path, body) {
   const res = await fetch(path, { method, headers: {"Content-Type": "application/json"},
                                   body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { const err = new Error(data.error || res.statusText); err.status = res.status; throw err; }
   return data;
+}
+
+// Two modes. Normal: the local server holds the data in memory and writes files when you Save.
+// Stateless (the Vercel deployment): the server keeps nothing, so the browser holds the working data
+// (S.state, also kept in localStorage), sends it with every call, and takes the new data back.
+// Save then downloads the changed files for you to commit.
+const STORE_KEY = "clinic-planner-state-v1";
+async function api(method, path, body) {
+  if (!S.stateless) return rawFetch(method, path, body);
+  const [p, qs = ""] = path.split("?"), query = {};
+  new URLSearchParams(qs).forEach((v, k) => (query[k] ||= []).push(v));
+  const env = await rawFetch("POST", "/api/call", { method, path: p, query, body: body ?? null, state: S.state });
+  if (env.status >= 400) { const err = new Error(env.result?.error || "Request failed"); err.status = env.status; throw err; }
+  if (env.state) { S.state = env.state; persistState(); }
+  return env.result;
+}
+let storageWarned = false;
+function persistState() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(S.state)); }
+  catch (e) { if (!storageWarned) { storageWarned = true; banner("warn", "This browser won't keep your work between visits (storage is full or blocked). Use Save… to download the files."); } }
+}
+function downloadFiles(files) {   // one download per changed file (spaced out so browsers allow them all)
+  Object.entries(files).forEach(([name, text], i) => setTimeout(() => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+  }, i * 400));
+}
+const toDisk = () => S.stateless ? "download the files" : "write to disk";
+async function initStatelessState() {
+  const deployed = await rawFetch("GET", "/api/initial");   // the data shipped with this deployment
+  const fresh = () => ({ version: 1, groups: deployed.groups, base: deployed.groups, lists: deployed.lists, rawHash: deployed.hashes });
+  let stored = null; try { stored = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
+  S.state = stored && stored.version === 1 && stored.groups && stored.base ? stored : fresh();
+  try { await api("GET", "/api/status"); }   // does the stored data still load?
+  catch (e) {
+    if (S.state === stored && confirm(`The data saved in this browser couldn't be loaded (${e.message}).\n\nStart again from the deployed data? Your browser copy will be discarded.`)) {
+      S.state = fresh(); persistState();
+    } else throw e;
+  }
 }
 let bannerTimer;
 function banner(kind, html, ms) {
@@ -195,39 +235,52 @@ function applyClinic(d) {
 function renderSavebar() {
   const u = S.unsaved, ex = S.external, bar = $("#savebar");
   const files = u.map(x => `${x.file} (+${x.added} −${x.removed})`).join(", ");
+  const st = S.stateless;
   bar.innerHTML =
-    (ex.length ? `<span class="state ext" title="These files were changed outside the app (e.g. git pull). Reload to pick them up.">⚠ Changed on disk: ${esc(ex.join(", "))}</span>` : "") +
-    (u.length ? `<span class="state dirty" title="Held in memory only. Not written to disk yet.">● Unsaved: ${esc(files)}</span>
-                 <button class="btn" id="sv-save">Save…</button><button class="btn secondary" id="sv-discard">Discard</button>`
+    (ex.length ? `<span class="state ext" title="${st ? "A newer version of the data has been deployed since you loaded it. Reload to pick it up." : "These files were changed outside the app (e.g. git pull). Reload to pick them up."}">⚠ ${st ? "Newer data deployed" : "Changed on disk"}: ${esc(ex.join(", "))}</span>` : "") +
+    (u.length ? `<span class="state dirty" title="${st ? "Held in this browser only. Use Save… to download the files." : "Held in memory only. Not written to disk yet."}">● Unsaved: ${esc(files)}</span>
+                 <button class="btn" id="sv-save">${st ? "Save (download)…" : "Save…"}</button><button class="btn secondary" id="sv-discard">Discard</button>`
               : `<span class="state clean">✓ Nothing to save</span>`) +
-    (ex.length && !u.length ? `<button class="btn secondary" id="sv-discard">Reload from disk</button>` : "");
-  const save = $("#sv-save"), discard = $("#sv-discard");
+    (ex.length && (st || !u.length) ? `<button class="btn secondary" id="sv-reload">${st ? "Reload deployed data" : "Reload from disk"}</button>` : "");
+  const save = $("#sv-save"), discard = $("#sv-discard"), reload = $("#sv-reload");
   if (save) save.onclick = () => guard(() => saveToDisk());
   if (discard) discard.onclick = () => guard(async () => {
-    if (!confirm(u.length ? "Discard all unsaved changes and reload everything from disk?\n\nThis cannot be undone."
-                          : "Reload everything from disk?")) return;
+    if (!confirm(st ? "Discard all unsaved changes and go back to the last saved (downloaded) state?\n\nThis cannot be undone."
+                    : "Discard all unsaved changes and reload everything from disk?\n\nThis cannot be undone.")) return;
     applyClinic(await api("POST", "/api/discard", {}));
-    banner("ok", "Reloaded from disk.", 3000); render();
+    banner("ok", st ? "Changes discarded." : "Reloaded from disk.", 3000); render();
+  });
+  if (reload) reload.onclick = () => guard(async () => {
+    if (!confirm(st ? "Replace your working data with the data currently deployed?\n\nUnsaved changes in this browser will be lost."
+                    : u.length ? "Discard all unsaved changes and reload everything from disk?\n\nThis cannot be undone." : "Reload everything from disk?")) return;
+    applyClinic(await api("POST", "/api/discard", { to: "deployed" }));
+    banner("ok", st ? "Loaded the deployed data." : "Reloaded from disk.", 3000); render();
   });
 }
 async function saveToDisk() {
   const u = S.unsaved; if (!u.length) return;
   const list = u.map(x => `  • ${x.file}  (+${x.added} / −${x.removed} lines${x.new ? ", new file" : ""})`).join("\n");
-  if (!confirm(`Save these changes to disk?\n\n${list}\n\nThis overwrites the files in ${S.dataDir || "the data folder"}/. Files not listed are left alone.`)) return;
+  const st = S.stateless;
+  if (!confirm(st ? `Download these changed files?\n\n${list}\n\nThis site can't write to your repository. Put the downloaded files in clinic_data/ and commit them to keep the changes (they also stay in this browser). Files not listed are unchanged.`
+                  : `Save these changes to disk?\n\n${list}\n\nThis overwrites the files in ${S.dataDir || "the data folder"}/. Files not listed are left alone.`)) return;
   let r;
   try { r = await api("POST", "/api/save", {}); }
   catch (e) {
     if (e.status !== 409) throw e;
-    if (!confirm(`${e.message}.\n\nSaving now would overwrite those outside changes with the version in the app.\n\nOverwrite anyway? (Cancel, then use “Reload from disk”, to keep the outside changes and lose yours.)`)) return;
+    if (!confirm(`${e.message}.\n\n${st ? "Downloading now would replace those newer deployed changes with the version in this browser" : "Saving now would overwrite those outside changes with the version in the app"}.\n\nContinue anyway? (Cancel, then use “${st ? "Reload deployed data" : "Reload from disk"}”, to keep the ${st ? "deployed" : "outside"} changes and lose yours.)`)) return;
     r = await api("POST", "/api/save", { force: true });
   }
-  applyClinic(r); banner("ok", `Saved ${esc(r.saved.join(", ") || "nothing (already up to date)")}.`, 4000); render();
+  if (st && r.files) downloadFiles(r.files);
+  applyClinic(r);
+  banner("ok", st ? `Downloaded ${esc(r.saved.join(", ") || "nothing (already up to date)")}. Put ${r.saved.length === 1 ? "it" : "them"} in clinic_data/ and commit to keep the changes.`
+                  : `Saved ${esc(r.saved.join(", ") || "nothing (already up to date)")}.`, 6000);
+  render();
 }
 // keep the bar honest if files change on disk while the app is open (e.g. after a git pull)
 async function refreshStatus() {
   try { const d = await api("GET", "/api/status"); S.unsaved = d.unsaved; S.external = d.external; renderSavebar(); } catch (e) {}
 }
-setInterval(refreshStatus, 4000);
+setInterval(() => { if (!S.stateless) refreshStatus(); }, 4000);   // stateless: only when you come back to the tab
 window.addEventListener("focus", refreshStatus);
 window.addEventListener("beforeunload", e => { if (S.unsaved?.length) { e.preventDefault(); e.returnValue = ""; } });
 async function loadClinic() {
@@ -323,11 +376,11 @@ async function viewTimetable() {
     const msg = `Clear ${where}?\n\n` +
       `${p.bookings} booking${p.bookings === 1 ? "" : "s"} will be CANCELLED:\n${lines.join("\n") || "  (none)"}\n\n` +
       `${p.blocks} blocked time${p.blocks === 1 ? "" : "s"} will be removed` + (p.blocked.length ? ` (${p.blocked.join(", ")})` : "") + `.\n\n` +
-      `Who is ticked in is not changed. This only changes the app's memory; nothing is written to disk until you press Save… (Discard undoes it).`;
+      `Who is ticked in is not changed. This only changes the working copy; nothing is ${S.stateless ? "downloaded" : "written to disk"} until you press Save… (Discard undoes it).`;
     if (!confirm(msg)) return;
     const r = await api("POST", "/api/clear-day", body);
     await loadClinic(); await viewTimetable();
-    if (!S.issues.length) banner("ok", `Cleared ${r.bookings} booking(s) and ${r.blocks} blocked time(s) at ${esc(where)}. Press Save… to write to disk.`, 5000);
+    if (!S.issues.length) banner("ok", `Cleared ${r.bookings} booking(s) and ${r.blocks} blocked time(s) at ${esc(where)}. Press Save… to ${toDisk()}.`, 5000);
   });
   if (S.editAvail) setupEditing(lo, n);
   $(".tt").onchange = async e => {  // the tick boxes
@@ -466,7 +519,7 @@ async function saveList() {
   const exists = (S.savedLists || []).some(l => l.name === name);
   if (!confirm(`${exists ? `Replace the saved list “${name}”?` : `Save a new list “${name}”?`}\n\n` +
       `${L.items.length} treatment${L.items.length === 1 ? "" : "s"} at ${t.location}: times, rooms, names and clients (not the bookings).\n\n` +
-      `This writes treatment_lists.json in ${S.dataDir || "the data folder"}/. Nothing else is changed.`)) return;
+      (S.stateless ? "The list is kept in this browser only (it isn't written to the repository)." : `This writes treatment_lists.json in ${S.dataDir || "the data folder"}/. Nothing else is changed.`))) return;
   const r = await api("PUT", "/api/lists", { name, location_id: S.location, items: L.items.map(toApiItem), overwrite: exists });
   S.savedLists = r.lists; S.listName = name; drawBookingPanel();
   banner("ok", `Saved the list “${esc(name)}” (${L.items.length}).`, 4000);
@@ -485,7 +538,7 @@ async function loadList(name) {
   banner("ok", `Loaded “${esc(l.name)}”${moved ? ` (switched to ${esc(l.location)})` : ""}. Press Book next to start.`, 4000);
 }
 async function deleteList(name) {
-  if (!name || !confirm(`Delete the saved list “${name}”?\n\nThis rewrites treatment_lists.json without it.`)) return;
+  if (!name || !confirm(`Delete the saved list “${name}”?${S.stateless ? "" : "\n\nThis rewrites treatment_lists.json without it."}`)) return;
   const r = await api("DELETE", `/api/lists?name=${encodeURIComponent(name)}`);
   S.savedLists = r.lists; if (S.listName === name) S.listName = null; drawBookingPanel();
   banner("ok", `Deleted the saved list “${esc(name)}”.`, 3000);
@@ -755,13 +808,13 @@ async function viewSetup() {
       ? [$(`select[data-d=${d}][data-k=o]`, box).value, $(`select[data-d=${d}][data-k=c]`, box).value] : null; });
     applyClinic(await api("PUT", `/api/locations/${btn.dataset.saveHours}/hours`, { hours }));
     fillJson(); showIssues();
-    if (!S.issues.length) banner("ok", "Opening hours updated. Press Save… (top bar) to write them to disk.", 3000);
+    if (!S.issues.length) banner("ok", `Opening hours updated. Press Save… (top bar) to ${toDisk()}.`, 3000);
   }));
   $("#j-save").onclick = () => guard(async () => {
     let data; try { data = JSON.parse($("#json").value); } catch (e) { throw new Error("Not valid JSON: " + e.message); }
     applyClinic(await api("PUT", "/api/clinic", { [S.setupGroup]: data }));
     await loadClinic(); fillJson(); showIssues();
-    if (!S.issues.length) banner("ok", `${GROUPS[S.setupGroup][1]} applied. Press Save… (top bar) to write it to disk.`, 3000);
+    if (!S.issues.length) banner("ok", `${GROUPS[S.setupGroup][1]} applied. Press Save… (top bar) to ${toDisk()}.`, 3000);
   });
   $("#j-reload").onclick = () => guard(async () => { await loadClinic(); fillJson(); });
   $("#j-down").onclick = () => { const a = document.createElement("a");
@@ -773,7 +826,12 @@ async function viewSetup() {
 // ---------- boot ----------
 (async () => {
   const d = new Date(); S.date = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  await guard(async () => { await loadClinic(); });
+  await guard(async () => {
+    const mode = await fetch("/api/mode").then(r => r.ok ? r.json() : { mode: "server" }).catch(() => ({ mode: "server" }));
+    S.stateless = mode.mode === "stateless";
+    if (S.stateless) await initStatelessState();
+    await loadClinic();
+  });
   render();
 })();
 </script>
