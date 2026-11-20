@@ -117,6 +117,11 @@ class App:
                              body.get("staff_ids"))
         return {"booking": self.clinic.describe_booking(b)}
 
+    def post_clear_day(self, q, body):
+        """Remove all bookings and blocks for a location on a date (``dry_run`` previews)."""
+        return self.clinic.clear_day(_need(body, "location_id"), _need(body, "date"),
+                                     bool(body.get("dry_run")))
+
     def delete_booking(self, q, body, bid):
         self.clinic.cancel_booking(bid)
         return {"ok": True}
@@ -189,6 +194,7 @@ ROUTES = [
     ("GET", r"/api/slots", "get_slots"),
     ("GET", r"/api/bookings", "get_bookings"),
     ("POST", r"/api/bookings", "post_booking"),
+    ("POST", r"/api/clear-day", "post_clear_day"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/presence", "put_presence"),
     ("GET", r"/api/roster", "get_roster"),

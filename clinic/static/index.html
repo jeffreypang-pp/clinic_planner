@@ -264,6 +264,7 @@ async function viewTimetable() {
     <div class="row">
       <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
       <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
+      <button class="btn danger" id="clear-day" title="Remove all bookings and blocked times for ${esc(t.location)} on ${esc(S.date)}">Clear day…</button>
       <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
     </div>
     <div class="legend">
@@ -281,6 +282,21 @@ async function viewTimetable() {
   $("#loc").onchange = e => { S.location = e.target.value; render(); };
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
+  $("#clear-day").onclick = () => guard(async () => {
+    const body = { location_id: S.location, date: S.date }, where = `${t.location} on ${S.date}`;
+    const p = await api("POST", "/api/clear-day", { ...body, dry_run: true });
+    if (!p.bookings && !p.blocks) { banner("ok", `Nothing to clear at ${esc(where)}: no bookings or blocked times.`, 4000); return; }
+    const lines = p.booking_details.slice(0, 8).map(b => `  • ${b.start} ${b.treatment}${b.client ? " (" + b.client + ")" : ""} – ${b.doctor}, ${b.room}`);
+    if (p.booking_details.length > 8) lines.push(`  • …and ${p.booking_details.length - 8} more`);
+    const msg = `Clear ${where}?\n\n` +
+      `${p.bookings} booking${p.bookings === 1 ? "" : "s"} will be CANCELLED:\n${lines.join("\n") || "  (none)"}\n\n` +
+      `${p.blocks} blocked time${p.blocks === 1 ? "" : "s"} will be removed` + (p.blocked.length ? ` (${p.blocked.join(", ")})` : "") + `.\n\n` +
+      `Who is ticked in is not changed. This only changes the app's memory; nothing is written to disk until you press Save… (Discard undoes it).`;
+    if (!confirm(msg)) return;
+    const r = await api("POST", "/api/clear-day", body);
+    await loadClinic(); await viewTimetable();
+    if (!S.issues.length) banner("ok", `Cleared ${r.bookings} booking(s) and ${r.blocks} blocked time(s) at ${esc(where)}. Press Save… to write to disk.`, 5000);
+  });
   if (S.editAvail) setupEditing(lo, n);
   $(".tt").onchange = async e => {  // the tick boxes
     const cb = e.target.closest("input.here"); if (!cb) return;

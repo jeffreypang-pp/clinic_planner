@@ -56,6 +56,9 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   ticking someone who is at another location moves them here.
   Click a free cell to check availability from that time.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
+  **Clear day…**: cancels every booking and removes every blocked time for this location on this date
+  (rooms here, plus doctors/staff ticked in here), after showing what will go and asking to confirm.
+  Tick boxes are left alone, and like all edits it only changes memory until you Save…
 * **Availability & booking** - choose treatment / location (or all) / start time; see who and what is free
   or why not; "find open slots" for the day; book with auto-assignment.
 * **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
@@ -73,7 +76,7 @@ replaces the given groups in memory, validated together with the rest first),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
 `PUT /api/locations/<id>/hours`,
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]`,
-`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`.
+`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet
 

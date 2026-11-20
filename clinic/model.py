@@ -392,6 +392,35 @@ class Clinic:
         self._get(self.bookings, booking_id, "booking")
         del self.bookings[booking_id]
 
+    def clear_day(self, location_id: str, day, dry_run: bool = False) -> dict:
+        """Remove every booking and every blocked time for one location on one date.
+
+        * bookings: those at ``location_id`` on ``day``
+        * blocks: of the rooms at ``location_id`` and of the doctors/staff who are ticked in
+          there that day (a person's blocks follow them, so they belong to where they are)
+        Presence (the tick boxes) is left alone.  With ``dry_run`` nothing is changed; the
+        result says what would be removed.
+        """
+        day = parse_date(day)
+        self._get(self.locations, location_id, "location")
+        bookings = [b for b in self._bookings_on(day) if b.location_id == location_id]
+        keys = [k for k in self.blocks if k[2] == day and (
+                    (k[0] == "room" and self.rooms[k[1]].location_id == location_id)
+                    or (k[0] != "room" and self.presence.get((k[0], k[1], day)) == location_id))]
+        spans = lambda slots: sum(1 for i in slots if i - 1 not in slots)
+        result = {
+            "bookings": len(bookings),
+            "blocks": sum(spans(self.blocks[k]) for k in keys),
+            "booking_details": [self.describe_booking(b) for b in sorted(bookings, key=lambda b: b.start)],
+            "blocked": sorted({self._resource_table(k[0])[k[1]].name for k in keys}),
+        }
+        if not dry_run:
+            for b in bookings:
+                del self.bookings[b.id]
+            for k in keys:
+                del self.blocks[k]
+        return result
+
     # ---- views -----------------------------------------------------------
     def timetable(self, location_id: str, day) -> dict:
         """Per-slot state of every doctor, staff member and room at one location.

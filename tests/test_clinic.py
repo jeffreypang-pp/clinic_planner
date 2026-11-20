@@ -266,6 +266,53 @@ class BookingTests(unittest.TestCase):
         self.assertTrue(any("opening hours" in i for i in self.c.issues()))
 
 
+class ClearDayTests(unittest.TestCase):
+    OTHER_DAY = date(2026, 11, 30)  # next Monday
+
+    def setUp(self):
+        c = self.c = small_clinic()
+        for day in (MON, self.OTHER_DAY):
+            for loc in ("a", "b"):
+                tick(c, "doctor", "d1" if loc == "a" else "d2", loc, day)
+                tick(c, "staff", "s1" if loc == "a" else "s2", loc, day)
+        c.set_opening_hours("a", {0: (t("09:00"), t("17:00"))})
+        c.set_opening_hours("b", {0: (t("09:00"), t("17:00"))})
+        self.a_booking = c.book("laser", "a", MON, t("09:00"))
+        self.a_other_day = c.book("laser", "a", self.OTHER_DAY, t("09:00"))
+        c.set_blocked("room", "a_laser", MON, t("12:00"), t("13:00"), True)
+        c.set_blocked("room", "a_laser", MON, t("15:00"), t("16:00"), True)
+        c.set_blocked("doctor", "d1", MON, t("13:00"), t("14:00"), True)   # d1 is at A on Monday
+        c.set_blocked("staff", "s2", MON, t("13:00"), t("14:00"), True)    # s2 is at B
+        c.set_blocked("room", "b_plain", MON, t("11:00"), t("12:00"), True)
+        c.set_blocked("room", "a_laser", self.OTHER_DAY, t("12:00"), t("13:00"), True)
+
+    def test_dry_run_changes_nothing_and_reports(self):
+        before = self.c.to_dict()
+        r = self.c.clear_day("a", MON, dry_run=True)
+        self.assertEqual((r["bookings"], r["blocks"]), (1, 3))   # 2 room spans + 1 doctor span
+        self.assertEqual(sorted(r["blocked"]), ["D1", "Laser"])
+        self.assertEqual(self.c.to_dict(), before)
+
+    def test_clears_only_that_location_and_day(self):
+        self.c.clear_day("a", MON)
+        self.assertNotIn(self.a_booking.id, self.c.bookings)
+        self.assertIn(self.a_other_day.id, self.c.bookings)                       # other day kept
+        self.assertEqual(self.c.blocks.get(("room", "a_laser", MON)), None)
+        self.assertEqual(self.c.blocks.get(("doctor", "d1", MON)), None)
+        self.assertIn(("room", "a_laser", self.OTHER_DAY), self.c.blocks)        # other day kept
+        self.assertIn(("room", "b_plain", MON), self.c.blocks)                    # other location kept
+        self.assertIn(("staff", "s2", MON), self.c.blocks)                        # s2 is at B
+        self.assertEqual(self.c.presence_at("doctor", "d1", MON), "a")            # ticks untouched
+
+    def test_nothing_to_clear_and_validation(self):
+        self.c.clear_day("a", MON)
+        r = self.c.clear_day("a", MON)
+        self.assertEqual((r["bookings"], r["blocks"]), (0, 0))
+        with self.assertRaises(NotFound):
+            self.c.clear_day("nowhere", MON)
+        self.assertEqual(self.c.issues(), [])
+
+
 class OpeningHoursTests(unittest.TestCase):
     def test_adjustable_hours_and_overrides(self):
         c = small_clinic()

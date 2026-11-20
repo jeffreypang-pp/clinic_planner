@@ -80,6 +80,19 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.app.clinic.presence_at("doctor", pid, day), loc)
         self.assertEqual(self.disk(), before)
 
+    def test_clear_day_is_in_memory_until_saved(self):
+        before = self.disk()
+        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()
+        status, r = self.call("POST", "/api/clear-day", {"location_id": "central", "date": day, "dry_run": True})
+        self.assertEqual((status, r["bookings"]), (200, 1))
+        self.assertEqual(self.call("GET", "/api/status")[1]["unsaved"], [])          # dry run = no change
+        status, r = self.call("POST", "/api/clear-day", {"location_id": "central", "date": day})
+        self.assertEqual(r["bookings"], 1)
+        self.assertEqual(self.disk(), before)                                         # still not on disk
+        self.assertEqual([u["file"] for u in self.call("GET", "/api/status")[1]["unsaved"]], ["schedule.json"])
+        self.call("POST", "/api/save", {})
+        self.assertEqual(Clinic.load_dir(self.dir).bookings, {})
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")
