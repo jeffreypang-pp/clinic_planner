@@ -60,6 +60,10 @@ class NotFound(ClinicError):
     """An id that does not exist."""
 
 
+class Conflict(ClinicError):
+    """Something already exists / changed underneath us (HTTP 409)."""
+
+
 # --------------------------------------------------------------------------
 # time helpers
 # --------------------------------------------------------------------------

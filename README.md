@@ -15,6 +15,9 @@ python -m unittest discover -s tests -t .
 | `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills** |
 | `schedule.json` | constantly | **presence** (who is in which location each day), **blocked times** (per doctor / staff member / room), **bookings** |
 
+A fourth file, `treatment_lists.json`, holds **saved lists of treatments** (see below). It is separate from the three
+clinic data files above, and only written when you save a list.
+
 **Nothing is saved automatically.** Edits (ticks, bookings, blocks, hours, JSON edits) live in memory on the
 server. The top bar shows `● Unsaved: schedule.json (+3 −1)`; press **Save…** and confirm the dialog to write
 the files, or **Discard** to throw the changes away and reload from disk. Only the files that changed are written
@@ -74,6 +77,11 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   staff fill up (the latest booking is ringed). A treatment that can't be carried out is reported with the reasons and nothing is
   booked for it. **Book all** goes down the list and stops at the first treatment that can't be carried out; **Check all** is a dry run;
   a booked row can be cancelled to try something else. An optional template fills in the name and times.
+  A copy of **Book next** sits in the panel's header, which stays pinned (and the panel scrolls itself to the next row to
+  fill in), so you can keep booking without scrolling.
+  **Save list… / Load / delete** keep named lists of the treatments in the panel (times, rooms, names, clients; not the bookings)
+  in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); a list belongs to a
+  location, and loading one switches to that location and replaces the list in the panel (bookings already made stay).
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
@@ -97,6 +105,7 @@ replaces the given groups in memory, validated together with the rest first),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
 `PUT /api/locations/<id>/hours`,
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]`,
+`GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id`, `items`, `overwrite`; `DELETE ?name=`),
 `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet

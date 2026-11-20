@@ -134,6 +134,37 @@ class ServerTests(unittest.TestCase):
         mine = next(b for b in saved.bookings.values() if b.name == "Mine")
         self.assertEqual((mine.room_id, mine.numbing_slots, mine.doctor_slots, mine.staff_slots), ("central_laser_b", 1, 2, 1))
 
+    def test_saved_lists_api_is_explicit_and_separate_from_clinic_data(self):
+        before = self.disk()
+        lists_file = os.path.join(self.dir, "treatment_lists.json")
+        self.assertEqual(self.call("GET", "/api/lists")[1]["lists"], [])
+        self.assertFalse(os.path.exists(lists_file))                              # reading never creates it
+        item = dict(name="Mine", numbing_minutes=15, doctor_minutes=30, staff_minutes=15,
+                    room_id="central_laser_b", start="12:00", client="C")
+        body = {"name": "Plan A", "location_id": "central", "items": [item, dict(item, start="14:00")]}
+        status, r = self.call("PUT", "/api/lists", body)
+        self.assertEqual((status, r["saved"], [x["count"] for x in r["lists"]]), (200, "Plan A", [2]))
+        self.assertTrue(os.path.exists(lists_file))
+        self.assertEqual(self.disk(), before)                                     # the three clinic files untouched
+        status, r = self.call("GET", "/api/status")
+        self.assertEqual((r["unsaved"], r["external"]), ([], []))                 # and it doesn't show as unsaved
+        self.assertEqual(self.call("PUT", "/api/lists", body)[0], 409)            # same name needs overwrite
+        self.assertEqual(self.call("PUT", "/api/lists", dict(body, overwrite=True))[0], 200)
+        bad = dict(body, name="Bad", items=[dict(item, doctor_minutes=0)])
+        status, r = self.call("PUT", "/api/lists", bad)
+        self.assertEqual(status, 400)
+        self.assertIn("Treatment 1", r["error"])
+        # a saved list can be run as-is
+        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()
+        saved = self.call("GET", "/api/lists")[1]["lists"][0]
+        status, r = self.call("POST", "/api/book-list", {"location_id": saved["location_id"], "date": day,
+                                                         "items": saved["items"], "dry_run": True})
+        self.assertEqual([x["status"] for x in r["results"]], ["booked", "booked"])
+        status, r = self.call("DELETE", "/api/lists?name=Plan%20A")
+        self.assertEqual((status, r["lists"]), (200, []))
+        self.assertEqual(self.call("DELETE", "/api/lists?name=Plan%20A")[0], 404)
+        self.assertEqual(self.disk(), before)
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")

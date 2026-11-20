@@ -19,20 +19,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .model import Clinic, ClinicError, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
+from .lists import TreatmentLists
+from .model import Clinic, ClinicError, Conflict, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
 STATIC = Path(__file__).parent / "static"
-
-
-class Conflict(ClinicError):
-    """The files on disk changed since we loaded them."""
 
 
 class App:
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.RLock()
+        self.lists = TreatmentLists(path)   # named treatment lists; saved only on request
         self.reload()
 
     def reload(self) -> None:
@@ -126,6 +124,20 @@ class App:
         return self.clinic.book_list(_need(body, "location_id"), _need(body, "date"), items,
                                      bool(body.get("dry_run")))
 
+    # ---- saved lists of treatments (the Timetable tab's "Add treatments" list) -----------
+    def get_lists(self, q, body):
+        return {"lists": self.lists.all(self.clinic), "file": self.lists.path}
+
+    def put_list(self, q, body):
+        """Save (or, with ``overwrite``, replace) a named list. Writes only treatment_lists.json."""
+        saved = self.lists.save(self.clinic, _need(body, "name"), _need(body, "location_id"),
+                                body.get("items"), bool(body.get("overwrite")))
+        return {"saved": saved["name"], "lists": self.lists.all(self.clinic)}
+
+    def delete_list(self, q, body):
+        self.lists.delete(_arg(q, "name"))
+        return {"lists": self.lists.all(self.clinic)}
+
     def post_clear_day(self, q, body):
         """Remove all bookings and blocks for a location on a date (``dry_run`` previews)."""
         return self.clinic.clear_day(_need(body, "location_id"), _need(body, "date"),
@@ -204,6 +216,9 @@ ROUTES = [
     ("GET", r"/api/bookings", "get_bookings"),
     ("POST", r"/api/bookings", "post_booking"),
     ("POST", r"/api/book-list", "post_book_list"),
+    ("GET", r"/api/lists", "get_lists"),
+    ("PUT", r"/api/lists", "put_list"),
+    ("DELETE", r"/api/lists", "delete_list"),
     ("POST", r"/api/clear-day", "post_clear_day"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/presence", "put_presence"),
