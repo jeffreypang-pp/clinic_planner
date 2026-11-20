@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clinic Planner</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6a7385; --line: #dfe3ea;
+    --accent: #2f6fed; --accent-text: #fff;
+    --free: #cfeedd; --free-line: #a7dcc0; --off: #eceef2; --closed: #d9dce3;
+    --away: #fde7b8; --away-text: #7a5300; --booked: #2f6fed; --booked-text: #fff;
+    --bad: #b3261e; --bad-bg: #fde8e6; --ok: #1b7a43; --ok-bg: #e3f5ea; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #98a1b3; --line: #30363f;
+      --accent: #5b8cff; --accent-text: #0b1020;
+      --free: #1f4a35; --free-line: #2a6a4b; --off: #232830; --closed: #2c313a;
+      --away: #5a4515; --away-text: #f7dca0; --booked: #4a7bf0; --booked-text: #fff;
+      --bad: #ff8a80; --bad-bg: #3b1e1c; --ok: #6fd69a; --ok-bg: #173526; --warn-bg: #3a3014;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0; }
+  main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button { background: none; border: 0; padding: 8px 14px; border-radius: 8px; color: var(--muted);
+               font: inherit; cursor: pointer; }
+  nav button.on { background: var(--accent); color: var(--accent-text); }
+  .spacer { flex: 1; }
+  label { color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
+  input, select, textarea, button { font: inherit; color: var(--text); }
+  input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  button.btn { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 6px;
+               padding: 7px 14px; cursor: pointer; }
+  button.btn.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+  button.btn.danger { background: var(--bad-bg); color: var(--bad); }
+  button.link { background: none; border: 0; color: var(--bad); cursor: pointer; padding: 2px 6px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 14px; }
+  .muted { color: var(--muted); }
+  #banner { padding: 8px 20px; display: none; }
+  #banner.warn { display: block; background: var(--warn-bg); }
+  #banner.err { display: block; background: var(--bad-bg); color: var(--bad); }
+  #banner.ok { display: block; background: var(--ok-bg); color: var(--ok); }
+  #banner ul { margin: 4px 0 0 18px; padding: 0; }
+
+  /* timetable grid: one 18px cell per 15 minutes */
+  .tt { overflow-x: auto; padding-bottom: 6px; }
+  .tt-row { display: grid; align-items: stretch; margin-bottom: 2px; }
+  .tt-label { position: sticky; left: 0; background: var(--panel); z-index: 2; padding: 3px 8px 3px 0;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .tt-label small { color: var(--muted); }
+  .tt-hour { font-size: 11px; color: var(--muted); height: 16px; overflow: visible; white-space: nowrap;
+             border-left: 1px solid var(--line); padding-left: 2px; }
+  .cell { height: 26px; margin-right: 1px; border-radius: 3px; font-size: 10px; overflow: hidden; white-space: nowrap; }
+  .cell.free { background: var(--free); border: 1px solid var(--free-line); cursor: pointer; }
+  .cell.free:hover { outline: 2px solid var(--accent); }
+  .cell.off { background: var(--off); }
+  .cell.closed { background: repeating-linear-gradient(45deg, var(--closed), var(--closed) 3px, var(--off) 3px, var(--off) 6px); }
+  .cell.away { background: var(--away); color: var(--away-text); text-align: center; line-height: 26px; font-weight: 600; }
+  .cell.booked { background: var(--booked); color: var(--booked-text); padding: 0 4px; line-height: 26px; cursor: default; }
+  .tt h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+                         margin-right: 5px; vertical-align: -2px; background: var(--c); }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .card table th:first-child:last-of-type, .card tr > th:first-child { white-space: nowrap; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .pill.yes { background: var(--ok-bg); color: var(--ok); }
+  .pill.no { background: var(--bad-bg); color: var(--bad); }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip { background: var(--free); border: 1px solid var(--free-line); border-radius: 6px; padding: 2px 8px;
+          cursor: pointer; font-size: 12px; color: var(--text); }
+  .reasons { margin: 6px 0 0 18px; padding: 0; color: var(--bad); }
+  textarea.json { width: 100%; height: 420px; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  .hours td { padding: 3px 8px; }
+  .days { display: flex; gap: 8px; }
+  .days label { flex-direction: row; align-items: center; gap: 3px; color: var(--text); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clinic Planner</h1>
+  <nav id="nav"></nav>
+  <span class="spacer"></span>
+  <label>Date <input type="date" id="date"></label>
+</header>
+<div id="banner"></div>
+<main id="main"></main>
+
+<script>
+const TABS = [["timetable", "Timetable"], ["availability", "Availability & booking"],
+              ["shifts", "Roster (shifts)"], ["setup", "Setup & save"]];
+const S = { clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
+            avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
+            shiftForm: { role: "doctor", from: null, to: null, days: [0,1,2,3,4,5,6] } };
+
+// ---------- helpers ----------
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const slotStr = i => String(Math.floor(i / 4)).padStart(2, "0") + ":" + String((i % 4) * 15).padStart(2, "0");
+const timeOptions = (sel, max = 96) => Array.from({length: max + 1}, (_, i) =>
+  `<option value="${slotStr(i)}" ${slotStr(i) === sel ? "selected" : ""}>${slotStr(i)}</option>`).join("");
+const byId = (list, id) => list.find(x => x.id === id);
+const locs = () => S.clinic.locations;
+
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: {"Content-Type": "application/json"},
+                                  body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+let bannerTimer;
+function banner(kind, html, ms) {
+  const b = $("#banner"); b.className = kind; b.innerHTML = html;
+  clearTimeout(bannerTimer);
+  if (ms) bannerTimer = setTimeout(showIssues, ms);
+}
+function showIssues() {
+  if (S.issues.length) banner("warn", `<b>${S.issues.length} booking(s) no longer fit the roster/hours:</b><ul>` +
+      S.issues.map(i => `<li>${esc(i)}</li>`).join("") + "</ul>");
+  else { const b = $("#banner"); b.className = ""; b.innerHTML = ""; }
+}
+const fail = e => banner("err", esc(e.message), 8000);
+async function guard(fn) { try { await fn(); } catch (e) { fail(e); } }
+
+async function loadClinic() {
+  const d = await api("GET", "/api/clinic");
+  S.clinic = d.clinic; S.issues = d.issues; S.weekdays = d.weekdays;
+  if (!S.location || !byId(locs(), S.location)) S.location = locs()[0]?.id;
+  if (!S.avail.treatment || !byId(S.clinic.treatments, S.avail.treatment)) S.avail.treatment = S.clinic.treatments[0]?.id;
+  showIssues();
+}
+
+// ---------- shell ----------
+function renderNav() {
+  $("#nav").innerHTML = TABS.map(([k, n]) => `<button class="${S.tab === k ? "on" : ""}" data-tab="${k}">${n}</button>`).join("");
+}
+$("#nav").onclick = e => { const t = e.target.dataset.tab; if (t) { S.tab = t; showIssues(); render(); } };
+$("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; S.avail.results = S.avail.slots = null; render(); } };
+
+async function render() {
+  renderNav(); $("#date").value = S.date;
+  await guard(async () => { await ({timetable: viewTimetable, availability: viewAvailability,
+                                    shifts: viewShifts, setup: viewSetup})[S.tab](); });
+}
+
+// ---------- timetable ----------
+async function viewTimetable() {
+  S.tt = await api("GET", `/api/timetable?location=${S.location}&date=${S.date}`);
+  const t = S.tt, [lo, hi] = t.view, n = hi - lo;
+  const cols = `grid-template-columns: 150px repeat(${n}, 19px)`;
+  const header = `<div class="tt-row" style="${cols}"><div class="tt-label"></div>` +
+    Array.from({length: n}, (_, i) => `<div class="tt-hour" style="${(lo + i) % 4 ? "border:0" : ""}">${(lo + i) % 4 ? "" : slotStr(lo + i)}</div>`).join("") + "</div>";
+  const bookings = Object.fromEntries(t.bookings.map(b => [b.id, b]));
+  const locName = id => byId(locs(), id)?.name || id;
+
+  function rowHtml(r, sub, role) {
+    let html = `<div class="tt-row" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+    for (let i = lo; i < hi; ) {
+      const c = r.cells[i];
+      if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
+        let j = i; while (j < hi && r.cells[j] === c) j++;
+        const b = bookings[c.slice(7)];
+        const label = b ? `${b.treatment}${b.client ? " · " + b.client : ""}` : "";
+        html += `<div class="cell booked" style="grid-column: span ${j - i}" title="${esc(b ? `${b.start}-${b.end} ${b.treatment}\nDr: ${b.doctor}\nStaff: ${b.staff.join(", ") || "-"}\nRoom: ${b.room}\nClient: ${b.client || "-"}` : "")}">${esc(label)}</div>`;
+        i = j; continue;
+      }
+      const time = slotStr(i);
+      if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free (click to check availability)"></div>`;
+      else if (c.startsWith("away:")) html += `<div class="cell away" title="${time} — at ${esc(locName(c.slice(5)))}">${esc(locName(c.slice(5))[0])}</div>`;
+      else html += `<div class="cell ${c}" title="${time} — ${c === "off" ? "not rostered" : "closed"}"></div>`;
+      i++;
+    }
+    return html + "</div>";
+  }
+  const section = (title, rows, sub, role) => `<h4>${title}</h4>` + (rows.length ? rows.map(r => rowHtml(r, sub?.(r), role)).join("") : `<div class="muted">none</div>`);
+  const people = list => [...list.filter(r => r.here), ...list.filter(r => !r.here)];
+
+  $("#main").innerHTML = `
+    <div class="row">
+      <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
+      <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
+    </div>
+    <div class="legend">
+      <span style="--c:var(--free)">free</span><span style="--c:var(--booked)">booked</span>
+      <span style="--c:var(--away)">at another location (initial shown)</span>
+      <span style="--c:var(--off)">not rostered</span><span style="--c:var(--closed)">closed</span>
+      <span>each cell = 15 min</span>
+    </div>
+    <div class="card tt">${header}
+      ${section("Doctors", people(t.doctors), r => r.here ? "" : "(not here)", "doctor")}
+      ${section("Staff", people(t.staff), r => r.here ? "" : "(not here)", "staff")}
+      ${section("Treatment rooms", t.rooms, null, "room")}
+    </div>`;
+  $("#loc").onchange = e => { S.location = e.target.value; render(); };
+  $(".tt").onclick = e => {
+    const c = e.target.closest(".cell.free"); if (!c) return;
+    S.avail.location = S.location; S.avail.start = c.dataset.start; S.avail.results = S.avail.slots = null;
+    S.tab = "availability"; render();
+  };
+}
+
+// ---------- availability & booking ----------
+async function viewAvailability() {
+  const A = S.avail, tr = S.clinic.treatments;
+  const treatment = byId(tr, A.treatment);
+  $("#main").innerHTML = `
+    <div class="card">
+      <div class="row">
+        <label>Treatment <select id="a-tr">${tr.map(t => `<option value="${t.id}" ${t.id === A.treatment ? "selected" : ""}>${esc(t.name)} (${t.duration_minutes} min)</option>`).join("")}</select></label>
+        <label>Location <select id="a-loc"><option value="">All locations</option>${locs().map(l => `<option value="${l.id}" ${l.id === A.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
+        <label>Start time <select id="a-start">${timeOptions(A.start, 95)}</select></label>
+        <button class="btn" id="a-check">Check availability</button>
+        <button class="btn secondary" id="a-slots">Find open slots on ${esc(S.date)}</button>
+      </div>
+      <div class="muted">${treatment ? `Needs: 1 doctor (qualified), ${treatment.staff_required} staff, a room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"}. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header).</div>
+    </div>
+    <div id="a-out"></div>`;
+  $("#a-tr").onchange = e => { A.treatment = e.target.value; A.results = A.slots = null; viewAvailability(); };
+  $("#a-loc").onchange = e => { A.location = e.target.value; A.results = A.slots = null; viewAvailability(); };
+  $("#a-start").onchange = e => { A.start = e.target.value; A.results = null; };
+  $("#a-check").onclick = () => guard(checkAvail);
+  $("#a-slots").onclick = () => guard(findSlots);
+  drawAvailResults();
+  if (!A.results && !A.slots && A.location) guard(checkAvail);  // arrived by clicking a free cell
+}
+async function checkAvail() {
+  const A = S.avail;
+  const d = await api("GET", `/api/availability?treatment=${A.treatment}&date=${S.date}&start=${A.start}&location=${A.location}`);
+  A.results = d.results; A.slots = null; drawAvailResults();
+}
+async function findSlots() {
+  const A = S.avail;
+  const d = await api("GET", `/api/slots?treatment=${A.treatment}&date=${S.date}&location=${A.location}`);
+  A.slots = d.slots; A.results = null; drawAvailResults();
+}
+function drawAvailResults() {
+  const A = S.avail, out = $("#a-out");
+  if (A.slots) {
+    out.innerHTML = Object.entries(A.slots).map(([lid, list]) => `
+      <div class="card"><h3>${esc(byId(locs(), lid).name)}</h3>
+      ${list.length ? `<div class="chips">${list.map(s => `<span class="chip" data-loc="${lid}" data-start="${s}">${s}</span>`).join("")}</div>`
+                    : `<span class="muted">No open slot for this treatment.</span>`}</div>`).join("");
+    out.onclick = e => { const c = e.target.closest(".chip"); if (!c) return;
+      A.location = c.dataset.loc; A.start = c.dataset.start; guard(async () => { await viewAvailability(); }); };
+    return;
+  }
+  if (!A.results) { out.innerHTML = ""; return; }
+  out.innerHTML = A.results.map((r, i) => `
+    <div class="card">
+      <h3>${esc(r.location)} · ${r.start}–${r.end} <span class="pill ${r.available ? "yes" : "no"}">${r.available ? "available" : "not available"}</span></h3>
+      ${r.reasons.length ? `<ul class="reasons">${r.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      <table><tr><th>Doctors free</th><td>${esc(r.doctors.map(d => d.name).join(", ") || "—")}</td></tr>
+      <tr><th>Staff free (need ${r.staff_needed})</th><td>${esc(r.staff.map(d => d.name).join(", ") || "—")}</td></tr>
+      <tr><th>Rooms free</th><td>${esc(r.rooms.map(d => d.name).join(", ") || "—")}</td></tr></table>
+      ${r.available ? `<div class="row" style="margin:12px 0 0">
+        <label>Client <input data-f="client" placeholder="optional"></label>
+        <label>Doctor <select data-f="doctor"><option value="">auto</option>${r.doctors.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label>
+        <label>Room <select data-f="room"><option value="">auto</option>${r.rooms.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label>
+        <button class="btn" data-book="${i}">Book (staff auto-assigned)</button></div>` : ""}
+    </div>`).join("");
+  out.onclick = e => {
+    const i = e.target.dataset.book; if (i === undefined) return;
+    const card = e.target.closest(".card"), r = A.results[i], f = k => $(`[data-f=${k}]`, card).value;
+    guard(async () => {
+      const d = await api("POST", "/api/bookings", { treatment_id: r.treatment_id, location_id: r.location_id,
+        date: S.date, start: r.start, client: f("client"), doctor_id: f("doctor"), room_id: f("room") });
+      await loadClinic(); await checkAvail();
+      const b = d.booking;
+      banner("ok", `Booked ${esc(b.treatment)} at ${esc(b.location)} ${b.start}–${b.end} with ${esc(b.doctor)}, ${esc(b.room)}, staff: ${esc(b.staff.join(", ") || "none")}.`, 6000);
+    });
+  };
+}
+
+// ---------- roster / shifts ----------
+async function viewShifts() {
+  const F = S.shiftForm; F.from ||= S.date; F.to ||= S.date;
+  const [{shifts}, {bookings}] = await Promise.all([api("GET", `/api/shifts?date=${S.date}`), api("GET", `/api/bookings?date=${S.date}`)]);
+  const people = F.role === "doctor" ? S.clinic.doctors : S.clinic.staff;
+  const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  $("#main").innerHTML = `
+    <div class="card"><h3>Shifts on ${esc(S.date)}</h3>
+      ${shifts.length ? `<table><tr><th>Role</th><th>Person</th><th>Location</th><th>Hours</th><th></th></tr>` +
+        shifts.map(s => `<tr><td>${s.role}</td><td>${esc(s.person)}</td><td>${esc(s.location)}</td><td>${s.start}–${s.end}</td>
+          <td><button class="link" data-del-shift="${s.id}">remove</button></td></tr>`).join("") + "</table>"
+        : `<span class="muted">No shifts on this date.</span>`}
+    </div>
+    <div class="card"><h3>Add shifts</h3>
+      <div class="row">
+        <label>Role <select id="f-role"><option value="doctor" ${F.role==="doctor"?"selected":""}>Doctor</option><option value="staff" ${F.role==="staff"?"selected":""}>Staff</option></select></label>
+        <label>Person <select id="f-person">${people.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></label>
+        <label>Location <select id="f-loc">${locs().map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join("")}</select></label>
+        <label>From <select id="f-start">${timeOptions("09:00", 95)}</select></label>
+        <label>To <select id="f-end">${timeOptions("17:00")}</select></label>
+      </div>
+      <div class="row">
+        <label>First date <input type="date" id="f-from" value="${F.from}"></label>
+        <label>Last date <input type="date" id="f-to" value="${F.to}"></label>
+        <div><div class="muted" style="font-size:12px;margin-bottom:3px">On weekdays</div><div class="days">
+          ${dayNames.map((n, i) => `<label><input type="checkbox" data-day="${i}" ${F.days.includes(i) ? "checked" : ""}>${n}</label>`).join("")}</div></div>
+        <button class="btn" id="f-add">Add shift(s)</button>
+      </div>
+      <div class="muted">A person can only be at one location at a time. To shuffle someone between sites, add two back-to-back shifts (e.g. 09:00–13:00 at one site, 13:00–17:00 at another). Adding is all-or-nothing across the date range.</div>
+    </div>
+    <div class="card"><h3>Bookings on ${esc(S.date)}</h3>
+      ${bookings.length ? `<table><tr><th>Time</th><th>Treatment</th><th>Location / room</th><th>Doctor</th><th>Staff</th><th>Client</th><th></th></tr>` +
+        bookings.map(b => `<tr><td>${b.start}–${b.end}</td><td>${esc(b.treatment)}</td><td>${esc(b.location)} / ${esc(b.room)}</td>
+          <td>${esc(b.doctor)}</td><td>${esc(b.staff.join(", ") || "—")}</td><td>${esc(b.client)}</td>
+          <td><button class="link" data-del-booking="${b.id}">cancel</button></td></tr>`).join("") + "</table>"
+        : `<span class="muted">No bookings.</span>`}
+    </div>`;
+  $("#f-role").onchange = e => { F.role = e.target.value; viewShifts(); };
+  $("#f-from").onchange = e => F.from = e.target.value;
+  $("#f-to").onchange = e => F.to = e.target.value;
+  document.querySelectorAll("[data-day]").forEach(cb => cb.onchange = () =>
+    F.days = [...document.querySelectorAll("[data-day]:checked")].map(x => +x.dataset.day));
+  $("#f-add").onclick = () => guard(async () => {
+    const dates = [], end = new Date(F.to + "T00:00:00Z");
+    if (new Date(F.from + "T00:00:00Z") > end) throw new Error("'Last date' is before 'First date'");
+    for (let d = new Date(F.from + "T00:00:00Z"); d <= end; d.setUTCDate(d.getUTCDate() + 1))
+      if (F.days.includes((d.getUTCDay() + 6) % 7)) dates.push(d.toISOString().slice(0, 10));
+    if (!dates.length) throw new Error("No dates match the chosen weekdays");
+    const r = await api("POST", "/api/shifts", { role: F.role, person_id: $("#f-person").value, location_id: $("#f-loc").value,
+      start: $("#f-start").value, end: $("#f-end").value, dates });
+    await loadClinic(); await viewShifts(); banner("ok", `Added ${r.added} shift(s).`, 4000);
+  });
+  $("#main").onclick = e => {
+    const s = e.target.dataset.delShift, b = e.target.dataset.delBooking;
+    if (s) guard(async () => { const r = await api("DELETE", `/api/shifts/${s}`); S.issues = r.issues; await viewShifts(); showIssues(); });
+    if (b) guard(async () => { await api("DELETE", `/api/bookings/${b}`); await loadClinic(); await viewShifts(); });
+  };
+}
+
+// ---------- setup & save ----------
+async function viewSetup() {
+  const wd = S.weekdays, names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+  $("#main").innerHTML = `
+    <div class="card"><h3>Opening hours (15-minute steps)</h3>
+      <div class="row">${locs().map(l => `
+        <div class="card" style="margin:0" data-hours="${l.id}"><b>${esc(l.name)}</b>
+          <table class="hours">${wd.map((d, i) => { const h = l.opening_hours[d];
+            return `<tr><td>${names[i]}</td>
+              <td><input type="checkbox" data-d="${d}" class="open" ${h ? "checked" : ""} title="open"></td>
+              <td><select data-d="${d}" data-k="o">${timeOptions(h ? h[0] : "09:00", 95)}</select></td>
+              <td><select data-d="${d}" data-k="c">${timeOptions(h ? h[1] : "17:00")}</select></td></tr>`; }).join("")}
+          </table><button class="btn" data-save-hours="${l.id}">Save ${esc(l.name)} hours</button></div>`).join("")}
+      </div>
+      <div class="muted">One-off closures / special hours: edit <code>date_overrides</code> in the JSON below (e.g. <code>"2026-12-25": null</code>).</div>
+    </div>
+    <div class="card"><h3>Whole clinic (locations, rooms, equipment, treatments, doctors &amp; skills, staff, shifts, bookings)</h3>
+      <div class="muted" style="margin-bottom:8px">Every change in the app is saved automatically on the server. Edit the JSON for anything without a form (add rooms, treatments, doctors…) and save it as a whole.</div>
+      <textarea class="json" id="json" spellcheck="false"></textarea>
+      <div class="row" style="margin:10px 0 0">
+        <button class="btn" id="j-save">Validate &amp; save whole clinic</button>
+        <button class="btn secondary" id="j-reload">Discard edits</button>
+        <button class="btn secondary" id="j-down">Download JSON</button>
+        <label>Upload JSON <input type="file" id="j-up" accept=".json,application/json"></label>
+      </div></div>`;
+  const fillJson = () => $("#json").value = JSON.stringify(S.clinic, null, 2);
+  fillJson();
+  document.querySelectorAll("[data-save-hours]").forEach(btn => btn.onclick = () => guard(async () => {
+    const box = btn.closest("[data-hours]"), hours = {};
+    S.weekdays.forEach(d => { hours[d] = $(`.open[data-d=${d}]`, box).checked
+      ? [$(`select[data-d=${d}][data-k=o]`, box).value, $(`select[data-d=${d}][data-k=c]`, box).value] : null; });
+    const r = await api("PUT", `/api/locations/${btn.dataset.saveHours}/hours`, { hours });
+    S.clinic = r.clinic; S.issues = r.issues; fillJson(); showIssues();
+    if (!S.issues.length) banner("ok", "Opening hours saved.", 3000);
+  }));
+  $("#j-save").onclick = () => guard(async () => {
+    let data; try { data = JSON.parse($("#json").value); } catch (e) { throw new Error("Not valid JSON: " + e.message); }
+    const r = await api("PUT", "/api/clinic", data);
+    S.clinic = r.clinic; S.issues = r.issues; fillJson(); await loadClinic(); showIssues();
+    if (!S.issues.length) banner("ok", "Clinic saved.", 3000);
+  });
+  $("#j-reload").onclick = () => guard(async () => { await loadClinic(); fillJson(); });
+  $("#j-down").onclick = () => { const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(S.clinic, null, 2)], {type: "application/json"}));
+    a.download = "clinic.json"; a.click(); };
+  $("#j-up").onchange = async e => { const f = e.target.files[0]; if (f) $("#json").value = await f.text(); };
+}
+
+// ---------- boot ----------
+(async () => {
+  const d = new Date(); S.date = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  await guard(async () => { await loadClinic(); });
+  render();
+})();
+</script>
+</body>
+</html>
