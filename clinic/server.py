@@ -1,6 +1,6 @@
 """Tiny stdlib HTTP server: JSON API + the single-page UI.
 
-    python -m clinic.server [--data data/clinic.json] [--port 8000]
+    python -m clinic.server [--data clinic.json] [--port 8000]
 
 Every change is persisted to the data file immediately, so the saved file is
 always the whole clinic (setup + shifts + bookings).
@@ -199,7 +199,7 @@ def make_handler(app: App):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--data", default="data/clinic.json", help="where the clinic is saved")
+    ap.add_argument("--data", default="clinic.json", help="where the clinic is saved")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()

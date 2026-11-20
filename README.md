@@ -3,12 +3,13 @@
 Timetable model for a multi-location aesthetics clinic. Python 3.10+ standard library only.
 
 ```bash
-python -m clinic.server            # http://127.0.0.1:8000, saves to data/clinic.json
+python -m clinic.server            # http://127.0.0.1:8000, saves to clinic.json
 python -m unittest discover -s tests -t .
 ```
 
-The first run seeds `data/clinic.json` with a sample clinic (3 locations, 3 doctors, 6 staff,
-8 treatments, 4 weeks of roster). Every change in the UI is written back to that file.
+The clinic lives in `clinic.json` (committed; pass `--data` to use another file). Every change in the UI
+is written back to it. If the file doesn't exist, a sample clinic (3 locations, 3 doctors, 6 staff,
+8 treatments, 4 weeks of roster) is generated instead.
 
 ## Model (`clinic/model.py`)
 

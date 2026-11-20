@@ -216,6 +216,10 @@ async function viewTimetable() {
 async function viewAvailability() {
   const A = S.avail, tr = S.clinic.treatments;
   const treatment = byId(tr, A.treatment);
+  if (!tr.length) {
+    $("#main").innerHTML = `<div class="card">No treatments are defined yet. Add some under <b>Setup &amp; save</b> (the <code>treatments</code> list in the JSON), and give each doctor the treatments they can perform.</div>`;
+    return;
+  }
   $("#main").innerHTML = `
     <div class="card">
       <div class="row">
