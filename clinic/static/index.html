@@ -33,6 +33,12 @@
                font: inherit; cursor: pointer; }
   nav button.on { background: var(--accent); color: var(--accent-text); }
   .spacer { flex: 1; }
+  #savebar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  #savebar .state { padding: 3px 10px; border-radius: 99px; font-weight: 600; }
+  #savebar .state.clean { background: var(--ok-bg); color: var(--ok); }
+  #savebar .state.dirty { background: var(--warn-bg); color: var(--away-text); }
+  #savebar .state.ext { background: var(--bad-bg); color: var(--bad); }
+  #savebar .btn { padding: 4px 12px; }
   label { color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
   input, select, textarea, button { font: inherit; color: var(--text); }
   input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
@@ -107,6 +113,7 @@
   <h1>Clinic Planner</h1>
   <nav id="nav"></nav>
   <span class="spacer"></span>
+  <div id="savebar"></div>
   <label>Date <input type="date" id="date"></label>
 </header>
 <div id="banner"></div>
@@ -132,7 +139,7 @@ async function api(method, path, body) {
   const res = await fetch(path, { method, headers: {"Content-Type": "application/json"},
                                   body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) { const err = new Error(data.error || res.statusText); err.status = res.status; throw err; }
   return data;
 }
 let bannerTimer;
@@ -149,7 +156,51 @@ function showIssues() {
 const fail = e => banner("err", esc(e.message), 8000);
 async function guard(fn) { try { await fn(); } catch (e) { fail(e); } }
 
-function applyClinic(d) { S.clinic = d.clinic; S.groups = d.groups; S.issues = d.issues; S.weekdays = d.weekdays; }
+function applyClinic(d) {
+  S.clinic = d.clinic; S.groups = d.groups; S.issues = d.issues; S.weekdays = d.weekdays;
+  S.unsaved = d.unsaved || []; S.external = d.external || []; S.dataDir = d.data_dir;
+  renderSavebar();
+}
+
+// ---------- saving: nothing is written to disk without an explicit confirmation ----------
+function renderSavebar() {
+  const u = S.unsaved, ex = S.external, bar = $("#savebar");
+  const files = u.map(x => `${x.file} (+${x.added} −${x.removed})`).join(", ");
+  bar.innerHTML =
+    (ex.length ? `<span class="state ext" title="These files were changed outside the app (e.g. git pull). Reload to pick them up.">⚠ Changed on disk: ${esc(ex.join(", "))}</span>` : "") +
+    (u.length ? `<span class="state dirty" title="Held in memory only. Not written to disk yet.">● Unsaved: ${esc(files)}</span>
+                 <button class="btn" id="sv-save">Save…</button><button class="btn secondary" id="sv-discard">Discard</button>`
+              : `<span class="state clean">✓ Nothing to save</span>`) +
+    (ex.length && !u.length ? `<button class="btn secondary" id="sv-discard">Reload from disk</button>` : "");
+  const save = $("#sv-save"), discard = $("#sv-discard");
+  if (save) save.onclick = () => guard(() => saveToDisk());
+  if (discard) discard.onclick = () => guard(async () => {
+    if (!confirm(u.length ? "Discard all unsaved changes and reload everything from disk?\n\nThis cannot be undone."
+                          : "Reload everything from disk?")) return;
+    applyClinic(await api("POST", "/api/discard", {}));
+    banner("ok", "Reloaded from disk.", 3000); render();
+  });
+}
+async function saveToDisk() {
+  const u = S.unsaved; if (!u.length) return;
+  const list = u.map(x => `  • ${x.file}  (+${x.added} / −${x.removed} lines${x.new ? ", new file" : ""})`).join("\n");
+  if (!confirm(`Save these changes to disk?\n\n${list}\n\nThis overwrites the files in ${S.dataDir || "the data folder"}/. Files not listed are left alone.`)) return;
+  let r;
+  try { r = await api("POST", "/api/save", {}); }
+  catch (e) {
+    if (e.status !== 409) throw e;
+    if (!confirm(`${e.message}.\n\nSaving now would overwrite those outside changes with the version in the app.\n\nOverwrite anyway? (Cancel, then use “Reload from disk”, to keep the outside changes and lose yours.)`)) return;
+    r = await api("POST", "/api/save", { force: true });
+  }
+  applyClinic(r); banner("ok", `Saved ${esc(r.saved.join(", ") || "nothing (already up to date)")}.`, 4000); render();
+}
+// keep the bar honest if files change on disk while the app is open (e.g. after a git pull)
+async function refreshStatus() {
+  try { const d = await api("GET", "/api/status"); S.unsaved = d.unsaved; S.external = d.external; renderSavebar(); } catch (e) {}
+}
+setInterval(refreshStatus, 4000);
+window.addEventListener("focus", refreshStatus);
+window.addEventListener("beforeunload", e => { if (S.unsaved?.length) { e.preventDefault(); e.returnValue = ""; } });
 async function loadClinic() {
   applyClinic(await api("GET", "/api/clinic"));
   if (!S.location || !byId(locs(), S.location)) S.location = locs()[0]?.id;
@@ -461,12 +512,12 @@ async function viewSetup() {
       <div class="muted">One-off closures / special hours: edit <code>date_overrides</code> in the JSON below (e.g. <code>"2026-12-25": null</code>).</div>
     </div>
     <div class="card"><h3>Clinic data files</h3>
-      <div class="muted" style="margin-bottom:8px">The clinic is stored as three JSON files, grouped by how often they change. Every action in the app saves automatically; edit the JSON here for anything without a form (add rooms, treatments, doctors, skills…).</div>
+      <div class="muted" style="margin-bottom:8px">The clinic is stored as three JSON files, grouped by how often they change. Changes are held in memory until you press <b>Save…</b> in the top bar (you'll be asked to confirm). Edit the JSON here for anything without a form (add rooms, treatments, doctors, skills…), press Validate &amp; apply, then Save.</div>
       <div class="gtabs" id="gtabs"></div>
       <div class="muted" id="gdesc" style="margin-bottom:8px"></div>
       <textarea class="json" id="json" spellcheck="false"></textarea>
       <div class="row" style="margin:10px 0 0">
-        <button class="btn" id="j-save">Validate &amp; save</button>
+        <button class="btn" id="j-save">Validate &amp; apply</button>
         <button class="btn secondary" id="j-reload">Discard edits</button>
         <button class="btn secondary" id="j-down">Download file</button>
         <label>Upload file <input type="file" id="j-up" accept=".json,application/json"></label>
@@ -491,13 +542,13 @@ async function viewSetup() {
       ? [$(`select[data-d=${d}][data-k=o]`, box).value, $(`select[data-d=${d}][data-k=c]`, box).value] : null; });
     applyClinic(await api("PUT", `/api/locations/${btn.dataset.saveHours}/hours`, { hours }));
     fillJson(); showIssues();
-    if (!S.issues.length) banner("ok", "Opening hours saved (planning.json).", 3000);
+    if (!S.issues.length) banner("ok", "Opening hours updated. Press Save… (top bar) to write them to disk.", 3000);
   }));
   $("#j-save").onclick = () => guard(async () => {
     let data; try { data = JSON.parse($("#json").value); } catch (e) { throw new Error("Not valid JSON: " + e.message); }
     applyClinic(await api("PUT", "/api/clinic", { [S.setupGroup]: data }));
     await loadClinic(); fillJson(); showIssues();
-    if (!S.issues.length) banner("ok", `${GROUPS[S.setupGroup][1]} saved.`, 3000);
+    if (!S.issues.length) banner("ok", `${GROUPS[S.setupGroup][1]} applied. Press Save… (top bar) to write it to disk.`, 3000);
   });
   $("#j-reload").onclick = () => guard(async () => { await loadClinic(); fillJson(); });
   $("#j-down").onclick = () => { const a = document.createElement("a");

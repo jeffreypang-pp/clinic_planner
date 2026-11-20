@@ -2,8 +2,10 @@
 
     python -m clinic.server [--data clinic_data] [--port 8000]
 
-Every change is persisted immediately into the data directory as three JSON files
-(resources.json, planning.json, schedule.json); only files whose content changed are rewritten.
+Nothing is written to disk until you explicitly save (POST /api/save, behind a confirmation in
+the UI).  Changes live in memory; the three JSON files (resources.json, planning.json,
+schedule.json) are only rewritten when saved, and only the ones that changed.  If a file was
+changed on disk behind our back (e.g. git pull) saving it is refused unless forced.
 """
 from __future__ import annotations
 
@@ -23,23 +25,63 @@ from .sample import build_sample
 STATIC = Path(__file__).parent / "static"
 
 
+class Conflict(ClinicError):
+    """The files on disk changed since we loaded them."""
+
+
 class App:
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.RLock()
-        if Clinic.dir_has_data(path):
-            self.clinic = Clinic.load_dir(path)
-        else:
-            self.clinic = build_sample()
-            self.clinic.save_dir(path)
+        self.reload()
 
-    def persist(self) -> None:
-        self.clinic.save_dir(self.path)
+    def reload(self) -> None:
+        """(Re)load from disk, dropping any unsaved changes."""
+        # raw = exact file text as of this load / last save (to spot changes made outside the app)
+        # canon = canonical rendering of what we loaded (so a hand-formatted file isn't "unsaved")
+        self.raw = Clinic.read_files(self.path)
+        if Clinic.dir_has_data(self.path):
+            self.clinic = Clinic.load_dir(self.path)
+            self.canon = self.clinic.render_files()
+        else:  # nothing saved yet: start from the sample, all of it unsaved until you save
+            self.clinic = build_sample()
+            self.canon = dict(self.raw)
+
+    def unsaved(self) -> list[dict]:
+        return self.clinic.pending_changes(self.canon)
+
+    def external(self) -> list[str]:
+        """Files that changed on disk since we loaded/saved them (e.g. after a git pull)."""
+        disk = Clinic.read_files(self.path)
+        return [n for n in disk if disk[n] != self.raw[n]]
+
+    def get_status(self, q, body):
+        return {"unsaved": self.unsaved(), "external": self.external()}
 
     # ---- handlers (each returns JSON-able data) --------------------------
     def get_clinic(self, q, body):
         return {"clinic": self.clinic.to_dict(), "groups": self.clinic.to_groups(),
-                "issues": self.clinic.issues(), "weekdays": WEEKDAYS}
+                "issues": self.clinic.issues(), "weekdays": WEEKDAYS,
+                "unsaved": self.unsaved(), "external": self.external(), "data_dir": self.path}
+
+    def post_save(self, q, body):
+        """Write the unsaved files to disk. Refuses (409) if one of them changed on disk since
+        it was loaded, unless ``{"force": true}``.  Files we didn't edit are never touched."""
+        names = {u["file"] for u in self.unsaved()}
+        disk = Clinic.read_files(self.path)
+        conflicts = sorted(n for n in names if disk[n] != self.raw[n])
+        if conflicts and not (body or {}).get("force"):
+            raise Conflict(f"{', '.join(conflicts)} changed on disk since it was loaded "
+                           "(for example by a git pull)")
+        written = self.clinic.save_dir(self.path, only=names)
+        self.raw = Clinic.read_files(self.path)
+        self.canon = self.clinic.render_files()
+        return {"saved": written, **self.get_clinic(q, None)}
+
+    def post_discard(self, q, body):
+        """Throw away unsaved changes and reload everything from disk."""
+        self.reload()
+        return self.get_clinic(q, None)
 
     def put_clinic(self, q, body):
         """Replace one or more data groups, e.g. ``{"planning": {...}}``; the rest is kept.
@@ -47,7 +89,6 @@ class App:
         if not isinstance(body, dict) or not body:
             raise ClinicError(f"Send an object with one or more of {list(GROUPS)}")
         self.clinic = Clinic.from_groups({**self.clinic.to_groups(), **body})
-        self.persist()
         return self.get_clinic(q, None)
 
     def get_timetable(self, q, body):
@@ -74,12 +115,10 @@ class App:
                              parse_time(_need(body, "start")), body.get("client", ""),
                              body.get("doctor_id") or None, body.get("room_id") or None,
                              body.get("staff_ids"))
-        self.persist()
         return {"booking": self.clinic.describe_booking(b)}
 
     def delete_booking(self, q, body, bid):
         self.clinic.cancel_booking(bid)
-        self.persist()
         return {"ok": True}
 
     def put_presence(self, q, body):
@@ -90,7 +129,6 @@ class App:
         dates = [parse_date(d) for d in (body.get("dates") or [_need(body, "date")])]
         for d in dates:
             self.clinic.set_presence(role, pid, d, loc)
-        self.persist()
         return {"days": len(dates), "issues": self.clinic.issues()}
 
     def get_roster(self, q, body):
@@ -115,7 +153,6 @@ class App:
         dates = [day + timedelta(days=7 * i) for i in range((until - day).days // 7 + 1)]
         for d in dates:
             self.clinic.set_blocked(kind, ident, d, start, end, not body["available"])
-        self.persist()
         return {"days": len(dates), "issues": self.clinic.issues()}
 
     def put_hours(self, q, body, lid):
@@ -125,7 +162,6 @@ class App:
                 raise ClinicError(f"Unknown weekday {wd!r}")
             hours[WEEKDAYS.index(wd)] = None if span is None else (parse_time(span[0]), parse_time(span[1]))
         self.clinic.set_opening_hours(lid, hours)
-        self.persist()
         return self.get_clinic(q, None)
 
 
@@ -144,7 +180,10 @@ def _need(body, key):
 
 ROUTES = [
     ("GET", r"/api/clinic", "get_clinic"),
+    ("GET", r"/api/status", "get_status"),
     ("PUT", r"/api/clinic", "put_clinic"),
+    ("POST", r"/api/save", "post_save"),
+    ("POST", r"/api/discard", "post_discard"),
     ("GET", r"/api/timetable", "get_timetable"),
     ("GET", r"/api/availability", "get_availability"),
     ("GET", r"/api/slots", "get_slots"),
@@ -195,6 +234,8 @@ def make_handler(app: App):
                 self._send(200, result)
             except NotFound as e:
                 self._send(404, {"error": str(e)})
+            except Conflict as e:
+                self._send(409, {"error": str(e)})
             except ClinicError as e:
                 self._send(400, {"error": str(e)})
             except Exception as e:  # pragma: no cover - surfaced to the UI for a prototype

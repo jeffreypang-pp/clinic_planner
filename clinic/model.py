@@ -24,6 +24,7 @@ Data is stored as three groups (three JSON files), by how often they change:
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -716,17 +717,49 @@ class Clinic:
             "bookings": sched.get("bookings", []),
         })
 
-    def save_dir(self, directory: str) -> list[str]:
-        """Write ``resources.json``, ``planning.json`` and ``schedule.json`` into ``directory``.
+    def render_files(self) -> dict[str, str]:
+        """The exact text of each data file for the current in-memory state."""
+        return {GROUP_FILES[g]: _dumps(d) for g, d in self.to_groups().items()}
 
-        A file is only rewritten if its content changed (so git diffs stay small and the
-        rarely-changing groups stay untouched).  Returns the names of the files written.
+    @staticmethod
+    def read_files(directory: str) -> dict[str, str | None]:
+        """Current text of each data file on disk (``None`` if it doesn't exist)."""
+        out: dict[str, str | None] = {}
+        for name in GROUP_FILES.values():
+            path = os.path.join(directory, name)
+            if os.path.exists(path):
+                with open(path) as f:
+                    out[name] = f.read()
+            else:
+                out[name] = None
+        return out
+
+    def pending_changes(self, baseline: dict[str, str | None]) -> list[dict]:
+        """Files whose in-memory content differs from ``baseline`` (what was last loaded
+        or saved), with the number of changed lines: ``[{file, added, removed}]``."""
+        out = []
+        for name, text in self.render_files().items():
+            old = baseline.get(name)
+            if old == text:
+                continue
+            diff = list(difflib.unified_diff((old or "").splitlines(), text.splitlines(), lineterm="", n=0))
+            out.append({"file": name, "new": old is None,
+                        "added": sum(1 for l in diff if l.startswith("+") and not l.startswith("+++")),
+                        "removed": sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))})
+        return out
+
+    def save_dir(self, directory: str, only: set[str] | None = None) -> list[str]:
+        """Write the data files into ``directory``; returns the names written.
+
+        A file is only rewritten if its content differs from what is on disk, and if
+        ``only`` is given, only those files are considered.
         """
         os.makedirs(directory, exist_ok=True)
         written = []
-        for group, data in self.to_groups().items():
-            path = os.path.join(directory, GROUP_FILES[group])
-            text = _dumps(data)
+        for name, text in self.render_files().items():
+            if only is not None and name not in only:
+                continue
+            path = os.path.join(directory, name)
             if os.path.exists(path):
                 with open(path) as f:
                     if f.read() == text:
@@ -740,7 +773,7 @@ class Clinic:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
                 raise
-            written.append(GROUP_FILES[group])
+            written.append(name)
         return written
 
     @classmethod

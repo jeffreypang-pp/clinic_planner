@@ -15,9 +15,16 @@ python -m unittest discover -s tests -t .
 | `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills** |
 | `schedule.json` | constantly | **presence** (who is in which location each day), **blocked times** (per doctor / staff member / room), **bookings** |
 
-Every action in the app saves immediately, and only the file(s) whose content changed are rewritten,
-so `resources.json` stays untouched in git when you only make bookings. The files reference each other by id
-and are validated together on load/save. If `clinic_data/` has no files, a sample clinic is generated.
+**Nothing is saved automatically.** Edits (ticks, bookings, blocks, hours, JSON edits) live in memory on the
+server. The top bar shows `● Unsaved: schedule.json (+3 −1)`; press **Save…** and confirm the dialog to write
+the files, or **Discard** to throw the changes away and reload from disk. Only the files that changed are written
+(making a booking touches only `schedule.json`). Restarting the server drops unsaved changes.
+
+Safe with `git pull`: if a data file changes on disk while the app is open, the bar shows
+`⚠ Changed on disk: …`; saving a file that changed behind the app's back is refused unless you confirm
+an explicit overwrite, and **Reload from disk** picks up the pulled version. Files you didn't edit are never
+touched by a save. The files reference each other by id and are validated together. If `clinic_data/` has
+no files, a sample clinic is loaded (unsaved until you save it).
 
 ## Model (`clinic/model.py`)
 
@@ -54,12 +61,13 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 * **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
   a form to set a location across a date range / weekdays, and the day's bookings (cancel here).
 * **Setup & save** - edit opening hours per weekday; edit each of the three data files as JSON
-  (add rooms, treatments, doctors, skills...), validate and save; download/upload a file.
+  (add rooms, treatments, doctors, skills...), validate and apply (then Save… in the top bar); download/upload a file.
 
 ## API
 
-`GET /api/clinic` (merged view + the 3 groups + issues), `PUT /api/clinic` (`{"resources": {...}}` etc.;
-replaces the given groups, validated together with the rest first),
+`GET /api/clinic` (merged view + the 3 groups + issues + unsaved/external files), `GET /api/status`,
+`POST /api/save` (`{"force": true}` to overwrite files changed on disk), `POST /api/discard`, `PUT /api/clinic` (`{"resources": {...}}` etc.;
+replaces the given groups in memory, validated together with the rest first),
 `GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,
 `PUT /api/presence` (`role`, `person_id`, `location_id` or null, `date`/`dates`),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
