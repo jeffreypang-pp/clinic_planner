@@ -344,6 +344,122 @@ class BookingTests(unittest.TestCase):
         self.assertTrue(any("opening hours" in i for i in self.c.issues()))
 
 
+class CustomTreatmentTests(unittest.TestCase):
+    """A treatment is added by giving numbing / doctor / staff minutes and the room."""
+
+    def setUp(self):
+        self.c = small_clinic()
+        tick(self.c, "doctor", "d1", "a")
+        tick(self.c, "staff", "s1", "a")
+        tick(self.c, "staff", "s2", "a")
+
+    def add(self, start="10:00", n=15, d=30, st=15, room="a_plain", **kw):
+        return self.c.book_custom("a", MON, t(start), n, d, st, room, **kw)
+
+    def test_the_only_rule_on_times(self):
+        """If the doctor treatment time is 0, the numbing time must be 0."""
+        self.add(n=0, d=30, st=0)                                    # doctor only
+        self.add(start="11:00", n=15, d=30, st=15)                   # all three
+        self.add(start="12:00", n=0, d=0, st=30)                     # staff alone
+        self.add(start="13:00", n=0, d=15, st=0)
+        with self.assertRaises(ClinicError) as cm:
+            self.add(start="14:00", n=15, d=0, st=15)                # numbing but no doctor treatment
+        self.assertIn("numbing", str(cm.exception))
+        for bad in ((0, 0, 0), (10, 30, 0), (-15, 30, 0), (15, "30", 0), (0, 0, 7)):
+            with self.assertRaises(ClinicError, msg=str(bad)):
+                self.add(start="15:00", n=bad[0], d=bad[1], st=bad[2])
+        self.assertEqual(len(self.c.bookings), 4)                    # the invalid ones booked nothing
+
+    def test_books_into_the_chosen_room_and_lays_out_steps(self):
+        b = self.add(room="a_laser2", name="Custom thing", client="Zed")
+        self.assertEqual((b.room_id, b.name, b.client, b.treatment_id), ("a_laser2", "Custom thing", "Zed", None))
+        self.assertEqual([(x.name, format_slot(x.start), format_slot(x.end)) for x in b.steps()],
+                         [("numbing", "10:00", "10:15"), ("doctor", "10:15", "10:45"), ("staff", "10:45", "11:00")])
+        self.assertEqual((b.doctor_id, sorted(b.staff)), ("d1", ["doctor", "numbing", "staff"]))
+        d = self.c.describe_booking(b)
+        self.assertEqual((d["treatment"], d["room"], d["doctor_minutes"]), ("Custom thing", "Laser 2", 30))
+
+    def test_room_is_required_and_must_be_free(self):
+        with self.assertRaises(ClinicError):
+            self.c.book_custom("a", MON, t("10:00"), 15, 30, 15, "")
+        with self.assertRaises(ClinicError):
+            self.add(room="b_plain")                                 # a room at another location
+        self.add(room="a_plain")
+        tick(self.c, "doctor", "d2", "a")
+        with self.assertRaises(ClinicError) as cm:
+            self.add(start="10:30", room="a_plain")                  # overlaps the first in the same room
+        self.assertIn("Room Plain", str(cm.exception))
+        self.add(start="10:30", room="a_laser")                      # another room is fine
+        self.c.set_blocked("room", "a_laser2", MON, t("12:00"), t("13:00"), True)
+        with self.assertRaises(ClinicError):
+            self.add(start="12:15", room="a_laser2")                 # blocked room
+
+    def test_templates_are_optional_so_no_skill_or_equipment_limits_without_one(self):
+        tick(self.c, "doctor", "d1", None)
+        tick(self.c, "doctor", "d2", "a")                            # d2 only knows botox
+        b = self.add(room="a_plain")                                 # no template: any doctor may do it
+        self.assertEqual(b.doctor_id, "d2")
+        with self.assertRaises(ClinicError):                         # linked to 'laser': d2 isn't qualified
+            self.add(start="12:00", room="a_laser", treatment_id="laser")
+        with self.assertRaises(ClinicError):                         # linked to 'laser': the room needs a laser
+            tick(self.c, "doctor", "d1", "a")
+            self.add(start="12:00", room="a_plain", treatment_id="laser")
+        ok = self.add(start="12:00", room="a_laser", treatment_id="laser")
+        self.assertEqual((ok.doctor_id, ok.treatment_id), ("d1", "laser"))
+        self.assertEqual(self.c.describe_booking(ok)["treatment"], "Laser")   # name falls back to the template
+
+    def test_staff_alone_needs_no_doctor_and_explicit_doctor_is_validated(self):
+        tick(self.c, "doctor", "d1", None)
+        b = self.add(n=0, d=0, st=45)
+        self.assertEqual((b.doctor_id, list(b.staff)), (None, ["staff"]))
+        tick(self.c, "doctor", "d1", "a")
+        tick(self.c, "doctor", "d2", "a")
+        self.assertEqual(self.add(start="12:00", doctor_id="d2").doctor_id, "d2")
+        with self.assertRaises(ClinicError):
+            self.add(start="13:00", n=0, d=0, st=15, doctor_id="d1")      # staff only: no doctor
+
+    def test_availability_check_for_custom(self):
+        av = self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, room_id="a_plain")
+        self.assertTrue(av["available"], av["reasons"])
+        self.assertEqual([r["id"] for r in av["rooms"]], ["a_plain"])
+        self.assertEqual([x["name"] for x in av["steps"]], ["numbing", "doctor", "staff"])
+        self.assertFalse(self.c.check_custom("a", MON, t("08:00"), 15, 30, 15, room_id="a_plain")["available"])
+
+    def test_survives_save_and_load_and_old_bookings_still_load(self):
+        self.add(room="a_laser", name="Mine", client="C")
+        self.add(start="12:00", n=0, d=0, st=30, room="a_plain")
+        data = self.c.to_dict()
+        again = Clinic.from_dict(data)
+        self.assertEqual(again.to_dict(), data)
+        self.assertEqual(again.issues(), [])
+        first = next(b for b in data["bookings"] if b["name"] == "Mine")
+        self.assertEqual((first["numbing_minutes"], first["doctor_minutes"], first["staff_minutes"]), (15, 30, 15))
+        # a booking saved by the previous version only named a template: minutes come from the template
+        legacy = small_clinic().to_dict()
+        legacy["presence"] = data["presence"]
+        legacy["bookings"] = [{"id": "old", "treatment_id": "laser", "location_id": "a", "room_id": "a_laser",
+                               "doctor_id": "d1", "staff": {"numbing": "s1", "doctor": "s1", "staff": "s1"},
+                               "date": "2026-11-23", "start": "09:00", "client": ""}]
+        old = Clinic.from_dict(legacy)
+        self.assertEqual((old.bookings["old"].numbing_slots, old.bookings["old"].doctor_slots,
+                          old.bookings["old"].staff_slots), (1, 2, 1))
+        self.assertEqual(old.issues(), [])
+        for broken in ({"treatment_id": None},                       # neither template nor minutes
+                       {"numbing_minutes": 15, "doctor_minutes": 0, "staff_minutes": 15}):
+            bad = dict(legacy["bookings"][0], **broken)
+            with self.assertRaises(ClinicError, msg=str(broken)):
+                Clinic.from_dict(dict(legacy, bookings=[bad]))
+
+    def test_issues_for_custom_bookings(self):
+        b = self.add(room="a_plain")
+        self.assertEqual(self.c.issues(), [])
+        self.c.set_blocked("room", "a_plain", MON, t("10:15"), t("10:30"), True)
+        self.assertTrue(any("room Plain" in i for i in self.c.issues()))
+        self.c.set_blocked("room", "a_plain", MON, t("10:15"), t("10:30"), False)
+        tick(self.c, "doctor", "d1", None)
+        self.assertTrue(any("doctor D1" in i for i in self.c.issues()))
+
+
 class BookListTests(unittest.TestCase):
     """Go down a list of (treatment, proposed start); stop at the first that can't be done."""
 
@@ -422,6 +538,33 @@ class BookListTests(unittest.TestCase):
         r = self.run_list([{"treatment_id": "botox", "start": "10:00", "location_id": "b"}])
         self.assertEqual(self.statuses(r), ["booked"])
         self.assertEqual(r["results"][0]["booking"]["location_id"], "b")
+
+    def test_list_of_custom_treatments_stops_at_first_failure(self):
+        base = dict(numbing_minutes=15, doctor_minutes=30, staff_minutes=15)
+        r = self.run_list([dict(base, room_id="a_plain", start="09:00", name="One"),
+                           dict(base, room_id="a_laser", start="09:15", name="Two"),    # the only doctor is busy
+                           dict(base, room_id="a_laser2", start="12:00", name="Three")])
+        self.assertEqual(self.statuses(r), ["booked", "failed", "not_attempted"])
+        self.assertEqual([x["treatment"] for x in r["results"]], ["One", "Two", "Three"])
+        self.assertTrue(any("doctor" in m for m in r["results"][1]["reasons"]))
+        self.assertEqual(len(self.c.bookings), 1)
+
+    def test_custom_items_in_a_list_validate_times_and_room(self):
+        base = dict(start="10:00", numbing_minutes=15, doctor_minutes=30, staff_minutes=15)
+        for item, text in ((dict(base, doctor_minutes=0), "numbing"),            # the one rule
+                           (dict(base), "room"),                                  # no room chosen
+                           (dict(base, room_id="b_plain"), "not at"),
+                           (dict(base, room_id="a_plain", numbing_minutes=10), "multiple of 15")):
+            r = self.run_list([item, dict(base, room_id="a_plain", start="12:00")])
+            self.assertEqual(self.statuses(r), ["failed", "not_attempted"], item)
+            self.assertIn(text, " ".join(r["results"][0]["reasons"]), item)
+
+    def test_templates_and_custom_items_can_be_mixed(self):
+        r = self.run_list([{"treatment_id": "botox", "start": "09:00"},
+                           dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain",
+                                start="09:00", name="Facial-ish")], dry_run=True)
+        self.assertEqual(self.statuses(r), ["booked", "booked"])
+        self.assertEqual(self.c.bookings, {})
 
     def test_empty_list(self):
         self.assertEqual(self.run_list([]), {"results": [], "total": 0, "booked": 0, "stopped_at": None,

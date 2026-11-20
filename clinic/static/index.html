@@ -104,7 +104,7 @@
   table.roster select { padding: 3px 4px; min-width: 96px; }
   table.roster select.set { background: var(--free); border-color: var(--free-line); }
   table.roster tr.group td { background: var(--bg); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
-  .tt-layout { display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: 16px; align-items: start; }
+  .tt-layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; align-items: start; }
   .tt-main { min-width: 0; }
   .book-panel { position: sticky; top: 8px; margin-bottom: 0; max-height: calc(100vh - 24px); overflow-y: auto; }
   @media (max-width: 1150px) { .tt-layout { grid-template-columns: 1fr; } .book-panel { position: static; max-height: none; } }
@@ -114,6 +114,10 @@
   .bk-edit { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
   .bk-edit select, .bk-edit input { flex: 1; min-width: 0; }
   .bk-edit .n { color: var(--muted); width: 18px; }
+  .bk-mins { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 6px; }
+  .bk-mins label, .bk-edit label { font-size: 11px; }
+  .bk-mins select { width: 100%; }
+  .bk-edit .grow { flex: 1; min-width: 0; }
   .bk-steps { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .book-panel .btn { padding: 5px 10px; }
   .cell.booked.latest { box-shadow: 0 0 0 2px var(--away-text); position: relative; z-index: 1; }
@@ -330,49 +334,78 @@ async function viewTimetable() {
   };
   $(".tt").onclick = e => {
     if (S.editAvail) return;
-    const c = e.target.closest(".cell.free"); if (!c || !S.clinic.treatments.length) return;
-    queueTreatment(undefined, c.dataset.start); drawBookingPanel();   // use this time for the next treatment
+    const c = e.target.closest(".cell.free"); if (!c) return;
+    const row = c.closest(".tt-row");   // use this time (and this room, if it is a room row) for the next treatment
+    queueItem(it => { it.start = c.dataset.start; if (row?.dataset.kind === "room") it.room = row.dataset.id; });
+    drawBookingPanel();
   };
   drawBookingPanel();
 }
 
 // ---------- booking panel (Timetable tab): add treatments one after another and watch the grid fill up ----------
-const newItem = from => ({ treatment: from?.treatment || S.clinic.treatments[0]?.id, start: from?.start || "10:00", client: "",
-                           status: "pending", booking: null, reasons: [], preview: null, note: "", touched: false });
+// A treatment is given by its numbing / doctor treatment / staff treatment minutes and the room.
+// The one rule: if the doctor treatment time is 0, the numbing time is 0 too.
+const MINUTES = Array.from({ length: 17 }, (_, i) => i * 15);          // 0, 15 … 240
+const minOpts = sel => MINUTES.map(m => `<option value="${m}" ${m === +sel ? "selected" : ""}>${m}</option>`).join("");
+const roomsHere = () => S.tt?.rooms || [];
+const fitRoom = presetId => { const t = byId(S.clinic.treatments, presetId), rooms = roomsHere();
+  return (t && rooms.find(r => t.required_equipment.every(e => r.equipment.includes(e))))?.id || rooms[0]?.id || null; };
+const newItem = from => ({ preset: from?.preset || "", name: from?.preset ? from.name : "", numbing: from?.numbing ?? 15, doctor: from?.doctor ?? 30,
+  staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", start: from?.start || "10:00", client: "",
+  status: "pending", booking: null, reasons: [], preview: null, note: "", touched: false });
 const resetItem = it => { if (it.status === "failed") it.status = "pending"; it.reasons = []; it.preview = null; it.note = ""; S.list.summary = ""; };
+function applyPreset(it, id) {   // optional template: fills the name and the three times, picks a room with its equipment
+  it.preset = id || "";
+  const t = byId(S.clinic.treatments, id); if (!t) return;
+  it.name = t.name; it.numbing = t.numbing_minutes; it.doctor = t.doctor_minutes; it.staff = t.staff_minutes; it.room = fitRoom(id);
+}
+function fixItem(it) {   // keep a row consistent with where we are and with the one rule
+  if (!roomsHere().some(r => r.id === it.room)) it.room = fitRoom(it.preset);
+  if (+it.doctor === 0) it.numbing = 0;
+}
 // Fill the next not-yet-booked row. With {append: true} (used when sending from another tab) a row the user has
 // already edited is never overwritten: an untouched blank row is reused, otherwise a new row is added.
-function queueTreatment(treatment, start, { append = false } = {}) {
+function queueItem(change, { append = false } = {}) {
   const L = S.list; let it = L.items.find(i => i.status !== "booked" && (!append || !i.touched));
   if (!it) { it = newItem(L.items[L.items.length - 1]); L.items.push(it); }
-  it.treatment = treatment ?? it.treatment; it.start = start ?? it.start; it.touched = true; resetItem(it);
+  change(it); it.touched = true; resetItem(it);
 }
 function drawBookingPanel() {
-  const L = S.list, tr = S.clinic.treatments, panel = $("#book-panel"), t = S.tt;
-  if (!tr.length) { panel.innerHTML = `<h3>Add treatments</h3><div class="muted">No treatments are defined yet. Add some under <b>Setup &amp; save</b> (<code>treatments</code> in planning.json).</div>`; return; }
+  const L = S.list, t = S.tt, panel = $("#book-panel"), rooms = roomsHere(), presets = S.clinic.treatments;
+  if (!rooms.length) { panel.innerHTML = `<h3>Add treatments</h3><div class="muted">${esc(t.location)} has no treatment rooms yet. Add some under <b>Setup &amp; save</b> (<code>rooms</code> in resources.json).</div>`; return; }
   if (!L.items.some(i => i.status !== "booked")) L.items.push(newItem(L.items[L.items.length - 1]));
+  L.items.forEach(it => { if (it.status !== "booked") fixItem(it); });
   const steps = b => b.steps.map(x => `${esc(x.label)} ${x.start}–${x.end}: ${esc([x.doctor, x.staff].filter(Boolean).join(" + "))}`).join("<br>");
   const detail = b => `Room: ${esc(b.room)}${b.doctor ? " · " + esc(b.doctor) : ""}<div class="bk-steps">${steps(b)}</div>`;
+  const endOf = it => slotStr(Math.min(96, (+it.start.slice(0, 2)) * 4 + (+it.start.slice(3)) / 15 + (+it.numbing + +it.doctor + +it.staff) / 15));
   const rows = L.items.map((it, i) => {
     if (it.status === "booked") { const b = it.booking, away = b.location_id !== S.location || b.date !== S.date;
       return `<div class="bk-row ok" data-i="${i}"><span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
         <button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button>
         <div class="muted">${away ? `${esc(b.location)} · ${b.date}<br>` : ""}${detail(b)}</div></div>`; }
-    const p = it.preview;
+    const p = it.preview, total = +it.numbing + +it.doctor + +it.staff;
     const preview = !p ? "" : p.status === "booked" ? `<span class="pill yes">can be done</span><div class="muted">${detail(p.booking)}</div>`
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
       : `<span class="muted">not attempted</span>`;
     return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
-      <div class="bk-edit"><span class="n">${i + 1}.</span>
-        <select data-f="treatment" title="Treatment">${tr.map(x => `<option value="${x.id}" ${x.id === it.treatment ? "selected" : ""}>${esc(x.name)} (${totalMin(x)} min)</option>`).join("")}</select>
-        <select data-f="start" title="Proposed start time" style="flex:0 0 78px">${timeOptions(it.start, 95)}</select></div>
+      <div class="bk-edit"><span class="n">${i + 1}.</span><input data-f="name" placeholder="treatment name (optional)" value="${esc(it.name)}">
+        <label title="Proposed start time">Start<select data-f="start">${timeOptions(it.start, 95)}</select></label></div>
+      ${presets.length ? `<div class="bk-edit"><select data-f="preset" title="Optional: fills in the name and the three times. Its doctor skills and room equipment are then enforced."><option value="">Template (optional): custom treatment</option>${presets.map(x => `<option value="${x.id}" ${x.id === it.preset ? "selected" : ""}>${esc(x.name)} (${totalMin(x)} min)</option>`).join("")}</select></div>` : ""}
+      <div class="bk-mins">
+        <label title="Numbing: 1 staff. Must be 0 when the doctor treatment is 0.">Numbing (min)<select data-f="numbing" ${+it.doctor === 0 ? "disabled" : ""}>${minOpts(it.numbing)}</select></label>
+        <label title="Doctor treatment: a doctor + 1 staff">Doctor (min)<select data-f="doctor">${minOpts(it.doctor)}</select></label>
+        <label title="Staff treatment: 1 staff">Staff (min)<select data-f="staff">${minOpts(it.staff)}</select></label></div>
+      <div class="bk-edit"><label class="grow">Room<select data-f="room">${rooms.map(r => `<option value="${r.id}" ${r.id === it.room ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
+        ${+it.doctor > 0 ? `<label class="grow">Doctor<select data-f="doctorId"><option value="">any available</option>${S.clinic.doctors.map(d => `<option value="${d.id}" ${d.id === it.doctorId ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>` : ""}</div>
       <div class="bk-edit"><input data-f="client" placeholder="client (optional)" value="${esc(it.client)}"><button class="link" data-rm="${i}">remove</button></div>
+      <div class="muted">${total ? `Total ${total} min, ${it.start}–${endOf(it)}` : "Set at least one time above 0"}${+it.doctor === 0 ? " · staff alone, no doctor" : ""}${it.preset ? " · template skills/equipment apply" : ""}</div>
       ${it.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${it.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
       ${it.note ? `<div class="muted">${esc(it.note)}</div>` : ""}${preview}</div>`;
   }).join("");
   panel.innerHTML = `<h3>Add treatments · ${esc(t.location)} · ${esc(S.date)}</h3>
-    <div class="muted" style="margin-bottom:8px">Add a treatment and press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
-      Click a free cell to use it as the start time. A treatment that can't be carried out (not enough doctor, staff or room) is reported and nothing is booked for it.</div>
+    <div class="muted" style="margin-bottom:8px">Give the numbing, doctor treatment and staff treatment times and the room, then press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
+      Doctor and staff are assigned automatically. Numbing is 0 when there is no doctor treatment. Click a free cell to use that time (and, on a room row, that room).
+      A treatment that can't be carried out (not enough doctor, staff or room) is reported and nothing is booked for it.</div>
     ${rows}
     <div class="row" style="margin:10px 0 0">
       <button class="btn" id="bk-next" title="Book the first treatment in the list that isn't booked yet">Book next</button>
@@ -381,10 +414,13 @@ function drawBookingPanel() {
       <button class="btn secondary" id="bk-add">+ Add</button>
       <button class="btn secondary" id="bk-clear" title="Empties this list; bookings already made stay in the schedule">Clear list</button></div>
     ${L.summary ? `<div style="margin-top:10px">${L.summary}</div>` : ""}`;
-  panel.oninput = e => { const row = e.target.closest("[data-i]"); if (row && e.target.dataset.f === "client") { const it = L.items[+row.dataset.i]; it.client = e.target.value; it.touched = true; } };
-  panel.onchange = e => { const el = e.target, row = el.closest("[data-i]");
-    if (!row || !el.dataset.f || el.dataset.f === "client") return;
-    const it = L.items[+row.dataset.i]; it[el.dataset.f] = el.value; it.touched = true; resetItem(it); drawBookingPanel(); };
+  panel.oninput = e => { const row = e.target.closest("[data-i]"), f = e.target.dataset.f;
+    if (row && (f === "client" || f === "name")) { const it = L.items[+row.dataset.i]; it[f] = e.target.value; it.touched = true; } };
+  panel.onchange = e => { const el = e.target, row = el.closest("[data-i]"), f = el.dataset.f;
+    if (!row || !f || f === "client" || f === "name") return;
+    const it = L.items[+row.dataset.i];
+    if (f === "preset") applyPreset(it, el.value); else it[f] = el.value;
+    it.touched = true; resetItem(it); drawBookingPanel(); };
   panel.onclick = e => { const el = e.target;
     if (el.id === "bk-add") { L.items.push(newItem(L.items[L.items.length - 1])); drawBookingPanel(); }
     else if (el.dataset.rm !== undefined) { L.items.splice(+el.dataset.rm, 1); L.summary = ""; drawBookingPanel(); }
@@ -406,7 +442,9 @@ async function runBooking(mode) {   // "next" | "all" | "check" (dry run)
   if (!idx.length) return;
   const use = mode === "next" ? idx.slice(0, 1) : idx;
   const r = await api("POST", "/api/book-list", { location_id: S.location, date: S.date, dry_run: mode === "check",
-    items: use.map(i => ({ treatment_id: L.items[i].treatment, start: L.items[i].start, client: L.items[i].client })) });
+    items: use.map(i => { const it = L.items[i];
+      return { name: it.name, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor, staff_minutes: +it.staff, room_id: it.room,
+               doctor_id: it.doctorId || undefined, treatment_id: it.preset || undefined, start: it.start, client: it.client }; }) });
   r.results.forEach((x, k) => { const it = L.items[use[k]]; it.reasons = []; it.preview = null; it.note = "";
     if (mode === "check") it.preview = { status: x.status, reasons: x.reasons || [], booking: x.booking };
     else if (x.status === "booked") { it.status = "booked"; it.booking = x.booking; L.last = x.booking.id; }
@@ -478,7 +516,7 @@ async function viewAvailability() {
   const A = S.avail, tr = S.clinic.treatments;
   const treatment = byId(tr, A.treatment);
   if (!tr.length) {
-    $("#main").innerHTML = `<div class="card">No treatments are defined yet. Add some under <b>Setup &amp; save</b> (the <code>treatments</code> list in the JSON), and give each doctor the treatments they can perform.</div>`;
+    $("#main").innerHTML = `<div class="card">The availability check works on <b>treatment templates</b>, and none are defined yet (<code>treatments</code> in planning.json, with doctor skills). You don't need any to book: add treatments directly on the <b>Timetable</b> tab by giving the numbing, doctor and staff times and the room.</div>`;
     return;
   }
   $("#main").innerHTML = `
@@ -537,7 +575,7 @@ function drawAvailResults() {
   out.onclick = e => {
     const i = e.target.dataset.use; if (i === undefined) return;
     const r = A.results[i];
-    S.location = r.location_id; queueTreatment(A.treatment, r.start, { append: true });
+    S.location = r.location_id; queueItem(it => { applyPreset(it, A.treatment); it.start = r.start; }, { append: true });
     S.tab = "timetable"; render();
   };
 }

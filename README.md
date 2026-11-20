@@ -33,28 +33,32 @@ no files, a sample clinic is loaded (unsaved until you save it).
 | Time | 15-minute slots (`00:00` = slot 0, `24:00` = slot 96). All times must sit on a 15-min boundary. |
 | Location | Weekly opening hours (editable) + per-date overrides (`null` = closed that day). Owns rooms. |
 | Room | Belongs to one location; has equipment tags (`laser`, `hifu`, ...). |
-| Treatment | Three sequential steps, each a multiple of 15 min (0 = skipped): **numbing** (1 staff) → **doctor treatment** (a qualified doctor + 1 staff) → **staff treatment** (1 staff). `doctor_minutes: 0` makes it a **staff-only** treatment (just `staff_minutes`). Required room equipment. One room is held for the whole treatment. |
+| Treatment | A treatment is given by three sequential step times (each a multiple of 15 min, 0 = skipped) and a room: **numbing** (1 staff) → **doctor treatment** (a doctor + 1 staff) → **staff treatment** (1 staff). **The one rule: if the doctor treatment time is 0, the numbing time must be 0.** (Doctor 0 = carried out by staff alone.) One room is held for the whole treatment. |
+| Treatment template | Optional entry in `planning.json` (`treatments`, with `numbing_minutes` / `doctor_minutes` / `staff_minutes` / `required_equipment`) plus doctor skills. Picking a template in the booking panel fills in the name and times; then its doctor skills and room equipment are enforced. Without one, any doctor and any room can be used. |
 | Doctor | Has a set of treatments they can perform (skills). Needed for the whole treatment. |
 | Staff | Interchangeable: any free, present staff member can assist any treatment. |
 | Presence | Per **day**, a doctor/staff member is at **one location or none** (the tick box). Stored in `schedule.json` as `presence[date][doctors\|staff][id] = location_id`, so "at most one location per day" holds by construction. Once present they are **free all day unless booked or blocked**. |
 | Block | A time span on a date when a doctor, staff member or room can't be used (lunch, leave, maintenance). Optional. |
-| Booking | Treatment + location + date + start. Holds 1 room for the whole treatment; the doctor is busy only during the doctor step, and each step has its own staff member (kept the same person from step to step where possible). |
+| Booking | A treatment (its three times, the room, a start, optional name/client/template) at a location and date. Holds the room for the whole treatment; the doctor is busy only during the doctor step, and each step has its own staff member (kept the same person from step to step where possible). Doctor and staff are assigned automatically (optionally pick the doctor). Stored in `schedule.json` with its own `numbing_minutes` / `doctor_minutes` / `staff_minutes`. |
 
 A treatment can start at a slot at a location iff:
 the location is open for the whole treatment; **each step** has a free staff member ticked in there for that step's window;
-the doctor step has a qualified doctor ticked in there and neither booked nor blocked during it; and a room there with the
-required equipment is free and not blocked for the whole treatment (so a doctor can still be numbing-/staff-stepped around).
-`Clinic.check_availability()` returns the free staff per step, the free doctors and rooms, or the specific reasons it can't.
+the doctor step has a doctor ticked in there (qualified, if a template is used) who is neither booked nor blocked during it;
+and the chosen room (at that location, with the template's equipment if one is used) is free and not blocked for the whole treatment.
+`Clinic.check_custom()` (three times + room) and `Clinic.check_availability()` (a template, any suitable room) return the free
+staff per step, doctors and rooms, or the specific reasons it can't.
 
-### Booking a list of treatments (`Clinic.book_list`)
+### Adding treatments one at a time (`Clinic.book_custom`, `Clinic.book_list`)
 
-Go down a list of treatments with proposed start times. Each is booked in turn and sees what the ones above it used.
-The first one that can't be carried out for lack of a doctor, staff member or room is reported as *cannot be performed*
-and the list **stops there**: those above it stay booked, those below are *not attempted*. `dry_run` reports the same
-outcome without booking anything. Assignment is greedy and never reshuffled afterwards (first free qualified doctor,
-first free suitable room, first free staff per step), so a failure means "no free resource given what's already booked".
+On the Timetable tab, add treatments to a list one at a time: give the numbing, doctor treatment and staff treatment
+minutes and the room, then **Book next** and watch the grid. **Book all** goes down the list in order; each treatment
+sees what the ones above it used. The first one that can't be carried out for lack of a doctor, staff member or room
+is reported as *cannot be performed* and the list **stops there**: those above it stay booked, those below are
+*not attempted*. `dry_run` / **Check all** reports the same outcome without booking anything. Assignment is greedy and never
+reshuffled afterwards (first free doctor, first free staff per step), so a failure means "no free resource given what's
+already booked".
 
-Treatment format (in `planning.json`): `{"id", "name", "numbing_minutes", "doctor_minutes", "staff_minutes", "required_equipment"}`;
+Template format (in `planning.json`): `{"id", "name", "numbing_minutes", "doctor_minutes", "staff_minutes", "required_equipment"}`;
 the old `duration_minutes` / `staff_required` are rejected with a message.
 
 Editing presence, blocks or opening hours never deletes bookings; any booking that no longer fits is
@@ -64,18 +68,19 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 
 * **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min
   (free, booked per step, away at another location, not in any location today, closed, blocked).
-  **This is where you book.** The **Add treatments** panel beside the grid takes treatments one after another:
-  pick a treatment and start time (or click a free cell to use that time), press **Book next**, and the grid updates so you can
-  watch how rooms, doctors and staff fill up (the latest booking is ringed). A treatment that can't be carried out is reported
-  with the reasons and nothing is booked for it. **Book all** goes down the list and stops at the first treatment that can't be
-  carried out; **Check all** is a dry run; a booked row can be cancelled to try something else.
+  **This is where you book.** The **Add treatments** panel beside the grid takes treatments one at a time: for each, set the
+  numbing / doctor / staff minutes (numbing locks to 0 when the doctor time is 0), the room and the start time (or click a free cell
+  to use that time, and on a room row that room), then press **Book next**; the grid updates so you can watch how rooms, doctors and
+  staff fill up (the latest booking is ringed). A treatment that can't be carried out is reported with the reasons and nothing is
+  booked for it. **Book all** goes down the list and stops at the first treatment that can't be carried out; **Check all** is a dry run;
+  a booked row can be cancelled to try something else. An optional template fills in the name and times.
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
   **Clear day…**: cancels every booking and removes every blocked time for this location on this date
   (rooms here, plus doctors/staff ticked in here), after showing what will go and asking to confirm.
   Tick boxes are left alone, and like all edits it only changes memory until you Save…
-* **Availability check** - look-up only: choose treatment / location (or all) / start time to see the free staff per step,
+* **Availability check** - look-up only, for treatment templates: choose treatment / location (or all) / start time to see the free staff per step,
   doctors and rooms, or why not; "find open slots" for the day; *Add to Timetable* sends a result to the booking panel.
 * **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
   a form to set a location across a date range / weekdays, and the day's bookings (cancel here).
@@ -92,7 +97,7 @@ replaces the given groups in memory, validated together with the rest first),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
 `PUT /api/locations/<id>/hours`,
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]`,
-`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items: [{treatment_id, start, client?}]`, optional `dry_run`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
+`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet
 

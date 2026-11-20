@@ -22,7 +22,10 @@ Presence   - per DAY, a doctor/staff member is at ONE location or at none (the
              booked for a treatment or explicitly blocked.
 Block      - times a doctor, staff member or room can't be used (leave,
              maintenance...).  Optional; default is nothing blocked.
-Booking    - a treatment at a location/date/start using 1 doctor, N staff, 1 room.
+Booking    - one treatment added to the timetable by giving its three step times, the
+             room and a start time (optionally linked to a Treatment template, whose doctor
+             skills and room equipment are then enforced).  The one rule on the times: if
+             the doctor treatment time is 0, the numbing time must be 0 as well.
 
 Data is stored as three groups (three JSON files), by how often they change:
   resources - locations, rooms (+equipment), doctors, staff        (rarely)
@@ -116,6 +119,35 @@ class Step:
         return STEP_LABELS[self.name]
 
 
+def _make_steps(start: int, numbing: int, doctor: int, staff: int) -> list[Step]:
+    """The non-empty steps laid out back to back from ``start``."""
+    out, at = [], start
+    for name, n in zip(STEP_NAMES, (numbing, doctor, staff)):
+        if n:
+            out.append(Step(name, at, at + n))
+            at += n
+    return out
+
+
+def check_step_minutes(numbing, doctor, staff, what: str = "Treatment") -> tuple[int, int, int]:
+    """Validate the three step times (minutes) and return them as slots.
+
+    Each must be 0 or a multiple of 15, at least one must be > 0, and the one real rule:
+    if the doctor treatment time is 0 then the numbing time must be 0 too.
+    """
+    slots = []
+    for key, v in (("numbing_minutes", numbing), ("doctor_minutes", doctor), ("staff_minutes", staff)):
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0 or v % SLOT_MINUTES:
+            raise ClinicError(f"{what}: {key} must be 0 or a multiple of {SLOT_MINUTES}")
+        slots.append(v // SLOT_MINUTES)
+    if not any(slots):
+        raise ClinicError(f"{what}: needs at least one step with minutes > 0")
+    if slots[1] == 0 and slots[0] > 0:
+        raise ClinicError(f"{what}: numbing_minutes must be 0 when doctor_minutes is 0 "
+                          "(there is no numbing without a doctor treatment)")
+    return slots[0], slots[1], slots[2]
+
+
 @dataclass
 class Treatment:
     id: str
@@ -134,13 +166,7 @@ class Treatment:
         return self.doctor_slots > 0
 
     def steps(self, start: int) -> list[Step]:
-        """The non-empty steps laid out back to back from ``start``."""
-        out, at = [], start
-        for name, n in zip(STEP_NAMES, (self.numbing_slots, self.doctor_slots, self.staff_slots)):
-            if n:
-                out.append(Step(name, at, at + n))
-                at += n
-        return out
+        return _make_steps(start, self.numbing_slots, self.doctor_slots, self.staff_slots)
 
 
 @dataclass
@@ -182,14 +208,46 @@ class Staff:
 @dataclass
 class Booking:
     id: str
-    treatment_id: str
     location_id: str
     room_id: str
-    doctor_id: str | None          # None for staff-only treatments
-    staff: dict[str, str]          # step name -> staff id (one per non-empty step)
     date: Date
     start: int
+    numbing_slots: int             # step 1: 1 staff
+    doctor_slots: int              # step 2: doctor + 1 staff (0 = carried out by staff alone)
+    staff_slots: int               # step 3: 1 staff
+    doctor_id: str | None          # None when doctor_slots == 0
+    staff: dict[str, str]          # step name -> staff id (one per non-empty step)
+    name: str = ""                 # label shown on the timetable
     client: str = ""
+    treatment_id: str | None = None  # optional link to a Treatment template (skills/equipment enforced)
+
+    @property
+    def duration_slots(self) -> int:
+        return self.numbing_slots + self.doctor_slots + self.staff_slots
+
+    def steps(self) -> list[Step]:
+        return _make_steps(self.start, self.numbing_slots, self.doctor_slots, self.staff_slots)
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What is being asked: three step times (slots), where/when, and optionally a fixed room
+    and/or the template whose skills/equipment apply."""
+    location_id: str
+    day: Date
+    start: int
+    numbing: int
+    doctor: int
+    staff: int
+    room_id: str | None = None
+    treatment_id: str | None = None
+
+    @property
+    def total(self) -> int:
+        return self.numbing + self.doctor + self.staff
+
+    def steps(self) -> list[Step]:
+        return _make_steps(self.start, self.numbing, self.doctor, self.staff)
 
 
 def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -229,7 +287,7 @@ class Clinic:
         raise ClinicError(f"Unknown role {role!r}; expected 'doctor' or 'staff'")
 
     def _end(self, b: Booking) -> int:
-        return b.start + self.treatments[b.treatment_id].duration_slots
+        return b.start + b.duration_slots
 
     def _bookings_on(self, day: Date) -> list[Booking]:
         return [b for b in self.bookings.values() if b.date == day]
@@ -290,7 +348,7 @@ class Clinic:
     def _usage(self, b: Booking) -> list[tuple[str, str, str, int, int]]:
         """Who is busy when for a booking: ``(role, person_id, step, start, end)``."""
         out = []
-        for st in self.treatments[b.treatment_id].steps(b.start):
+        for st in b.steps():
             if st.name == "doctor" and b.doctor_id:
                 out.append(("doctor", b.doctor_id, st.name, st.start, st.end))
             if b.staff.get(st.name):
@@ -326,19 +384,40 @@ class Clinic:
 
     def check_availability(self, treatment_id: str, location_id: str, day, start: int,
                            ignore_booking: str | None = None) -> dict:
-        """Can ``treatment_id`` start at ``start`` on ``day`` at ``location_id``?
-
-        Every step needs its resources for its own time window: one free staff member for
-        each step, a free qualified doctor for the doctor step, and one free room with the
-        required equipment for the whole treatment.  Returns ``available``, who/what is free
-        (per step for staff), and human-readable ``reasons`` when it isn't.
-        """
-        day = parse_date(day)
+        """Can the template ``treatment_id`` start at ``start`` on ``day`` at ``location_id``
+        (in any suitable room)?  See ``_check`` for the rules and the result."""
         t = self._get(self.treatments, treatment_id, "treatment")
+        return self._check(Plan(location_id, parse_date(day), start, t.numbing_slots, t.doctor_slots,
+                                t.staff_slots, None, t.id), ignore_booking)
+
+    def check_custom(self, location_id: str, day, start: int, numbing_minutes: int, doctor_minutes: int,
+                     staff_minutes: int, room_id: str | None = None, treatment_id: str | None = None,
+                     ignore_booking: str | None = None) -> dict:
+        """Same, for a treatment given directly by its three step times (and optionally a room)."""
+        n, d, s = check_step_minutes(numbing_minutes, doctor_minutes, staff_minutes)
+        if treatment_id:
+            self._get(self.treatments, treatment_id, "treatment")
+        return self._check(Plan(location_id, parse_date(day), start, n, d, s, room_id or None,
+                                treatment_id or None), ignore_booking)
+
+    def _check(self, plan: Plan, ignore: str | None = None) -> dict:
+        """Every step needs its resources for its own time window: one free staff member for
+        each step, a free doctor for the doctor step, and the room for the whole treatment.
+
+        * a fixed ``room_id`` must be at the location and free (and have the template's
+          equipment if a template is linked); without one, any suitable free room will do
+        * with a linked template only doctors qualified for it count, and its equipment
+          decides which rooms fit; without one any doctor / any room will do
+
+        Returns ``available``, who/what is free (staff per step) and ``reasons`` when it isn't.
+        """
+        day, start, location_id = plan.day, plan.start, plan.location_id
         loc = self._get(self.locations, location_id, "location")
+        t = self.treatments[plan.treatment_id] if plan.treatment_id else None
+        label = t.name if t else "this treatment"
         if not 0 <= start < SLOTS_PER_DAY:
             raise ClinicError(f"Bad start slot {start}")
-        end = start + t.duration_slots
+        end = start + plan.total
         span = f"{format_slot(start)}-{format_slot(min(end, SLOTS_PER_DAY))}"
         reasons: list[str] = []
         steps_out: list[dict] = []
@@ -346,7 +425,7 @@ class Clinic:
         rooms: list = []
 
         if end > SLOTS_PER_DAY:
-            reasons.append(f"{t.name} would run past midnight")
+            reasons.append(f"{label[0].upper() + label[1:]} would run past midnight")
         hours = loc.hours_on(day)
         if hours is None:
             reasons.append(f"{loc.name} is closed on {day}")
@@ -356,10 +435,10 @@ class Clinic:
 
         if end <= SLOTS_PER_DAY:  # can't evaluate resources beyond the day
             everyone = list(self.staff.values())
-            for st in t.steps(start):
+            for st in plan.steps():
                 window = f"{format_slot(st.start)}-{format_slot(st.end)}"
                 free_staff, present_staff = self._free_people("staff", everyone, location_id, day,
-                                                              st.start, st.end, ignore_booking)
+                                                              st.start, st.end, ignore)
                 if not free_staff:
                     reasons.append(f"No staff free for {st.label.lower()} {window} at {loc.name} "
                                    f"({len(present_staff)} in {loc.name} that day)")
@@ -367,33 +446,47 @@ class Clinic:
                                   "end": format_slot(st.end), "needs_doctor": st.name == "doctor",
                                   "staff": [{"id": p.id, "name": p.name} for p in free_staff]})
                 if st.name == "doctor":
-                    skilled = [d for d in self.doctors.values() if t.id in d.treatments]
-                    docs, present_docs = self._free_people("doctor", skilled, location_id, day,
-                                                           st.start, st.end, ignore_booking)
-                    if not skilled:
-                        reasons.append(f"No doctor performs {t.name}")
+                    pool = [d for d in self.doctors.values() if t is None or t.id in d.treatments]
+                    docs, present_docs = self._free_people("doctor", pool, location_id, day,
+                                                           st.start, st.end, ignore)
+                    if not pool:
+                        reasons.append(f"No doctor performs {t.name}" if t else "There are no doctors")
                     elif not present_docs:
-                        reasons.append(f"No doctor qualified for {t.name} is in {loc.name} on {day}")
+                        reasons.append(f"No doctor{' qualified for ' + t.name if t else ''} "
+                                       f"is in {loc.name} on {day}")
                     elif not docs:
-                        reasons.append(f"Every qualified doctor in {loc.name} is booked or blocked "
-                                       f"for the doctor treatment {window}")
+                        reasons.append(f"Every {'qualified ' if t else ''}doctor in {loc.name} is booked or "
+                                       f"blocked for the doctor treatment {window}")
 
-            fitting = [r for r in self.rooms.values()
-                       if r.location_id == location_id and t.required_equipment <= r.equipment]
-            rooms = [r for r in fitting
-                     if not self._room_busy(r.id, day, start, end, ignore_booking)
-                     and not self._is_blocked("room", r.id, day, start, end)]
-            if not fitting:
-                need = ", ".join(sorted(t.required_equipment)) or "any equipment"
-                reasons.append(f"{loc.name} has no treatment room with the required equipment ({need})")
-            elif not rooms:
-                reasons.append(f"Every suitable room at {loc.name} is booked or unavailable for {span}")
+            equipment = t.required_equipment if t else set()
+            if plan.room_id:
+                room = self._get(self.rooms, plan.room_id, "room")
+                if room.location_id != location_id:
+                    reasons.append(f"Room {room.name} is not at {loc.name}")
+                elif not equipment <= room.equipment:
+                    reasons.append(f"Room {room.name} lacks the required equipment "
+                                   f"({', '.join(sorted(equipment - room.equipment))})")
+                elif self._room_busy(room.id, day, start, end, ignore) or self._is_blocked("room", room.id, day, start, end):
+                    reasons.append(f"Room {room.name} is booked or unavailable for {span}")
+                else:
+                    rooms = [room]
+            else:
+                fitting = [r for r in self.rooms.values()
+                           if r.location_id == location_id and equipment <= r.equipment]
+                rooms = [r for r in fitting
+                         if not self._room_busy(r.id, day, start, end, ignore)
+                         and not self._is_blocked("room", r.id, day, start, end)]
+                if not fitting:
+                    need = ", ".join(sorted(equipment)) or "any equipment"
+                    reasons.append(f"{loc.name} has no treatment room with the required equipment ({need})")
+                elif not rooms:
+                    reasons.append(f"Every suitable room at {loc.name} is booked or unavailable for {span}")
 
         return {
             "available": not reasons,
-            "treatment_id": t.id, "location_id": loc.id, "date": day.isoformat(),
+            "treatment_id": plan.treatment_id, "location_id": loc.id, "date": day.isoformat(),
             "start": format_slot(start), "end": format_slot(min(end, SLOTS_PER_DAY)),
-            "needs_doctor": t.needs_doctor,
+            "needs_doctor": plan.doctor > 0,
             "steps": steps_out,
             "doctors": [{"id": d.id, "name": d.name} for d in docs],
             "rooms": [{"id": r.id, "name": r.name} for r in rooms],
@@ -418,47 +511,73 @@ class Clinic:
         return out
 
     # ---- bookings --------------------------------------------------------
-    def book(self, treatment_id: str, location_id: str, day, start: int, client: str = "",
-             doctor_id: str | None = None, room_id: str | None = None,
-             booking_id: str | None = None) -> Booking:
-        """Book a treatment, choosing what isn't specified.
+    def _book(self, plan: Plan, name: str, client: str, doctor_id: str | None,
+              booking_id: str | None) -> Booking:
+        """Book ``plan`` if possible, choosing what isn't specified.
 
-        Greedy and deterministic: the first free qualified doctor, the first free suitable
-        room, and for each step the first free staff member (keeping the same person from
-        one step to the next where possible).  Bookings are never reshuffled afterwards.
+        Greedy and deterministic: the first free doctor (qualified, if a template is linked), the
+        first free suitable room if none was fixed, and for each step the first free staff member
+        (keeping the same person from one step to the next where possible).  Bookings are never
+        reshuffled afterwards.
         """
-        day = parse_date(day)
-        av = self.check_availability(treatment_id, location_id, day, start)
+        av = self._check(plan)
         if not av["available"]:
             raise ClinicError("Not available: " + "; ".join(av["reasons"] or ["no free resources"]))
         free_docs = [d["id"] for d in av["doctors"]]
-        free_rooms = [r["id"] for r in av["rooms"]]
-        if av["needs_doctor"]:
+        if plan.doctor:
             if doctor_id and doctor_id not in free_docs:
-                raise ClinicError(f"Doctor {doctor_id!r} is not available for that treatment/time")
+                raise ClinicError(f"Doctor {doctor_id!r} is not available for the doctor treatment")
             doctor = doctor_id or free_docs[0]
         elif doctor_id:
             raise ClinicError("This treatment is carried out by staff alone; no doctor is needed")
         else:
             doctor = None
-        if room_id and room_id not in free_rooms:
-            raise ClinicError(f"Room {room_id!r} is not available for that treatment/time")
         staff: dict[str, str] = {}
         previous = None
         for step in av["steps"]:
             candidates = [s["id"] for s in step["staff"]]
             previous = previous if previous in candidates else candidates[0]
             staff[step["name"]] = previous
-        b = Booking(booking_id or _new_id("bk"), treatment_id, location_id, room_id or free_rooms[0],
-                    doctor, staff, day, start, client)
+        b = Booking(booking_id or _new_id("bk"), plan.location_id, plan.room_id or av["rooms"][0]["id"],
+                    plan.day, plan.start, plan.numbing, plan.doctor, plan.staff, doctor, staff,
+                    name, client, plan.treatment_id)
         self.bookings[b.id] = b
         return b
+
+    def book(self, treatment_id: str, location_id: str, day, start: int, client: str = "",
+             doctor_id: str | None = None, room_id: str | None = None,
+             booking_id: str | None = None) -> Booking:
+        """Book a template treatment (room chosen automatically unless given)."""
+        t = self._get(self.treatments, treatment_id, "treatment")
+        self._get(self.locations, location_id, "location")
+        return self._book(Plan(location_id, parse_date(day), start, t.numbing_slots, t.doctor_slots,
+                               t.staff_slots, room_id or None, t.id), "", client, doctor_id, booking_id)
+
+    def book_custom(self, location_id: str, day, start: int, numbing_minutes: int, doctor_minutes: int,
+                    staff_minutes: int, room_id: str, name: str = "", client: str = "",
+                    doctor_id: str | None = None, treatment_id: str | None = None,
+                    booking_id: str | None = None) -> Booking:
+        """Add a treatment given by its numbing / doctor / staff times and the room.
+
+        The only rule on the times: if the doctor treatment time is 0, numbing must be 0 too.
+        ``treatment_id`` optionally links a template (its doctor skills and equipment apply).
+        """
+        n, d, s = check_step_minutes(numbing_minutes, doctor_minutes, staff_minutes)
+        if not room_id:
+            raise ClinicError("Choose a room")
+        self._get(self.locations, location_id, "location")
+        if treatment_id:
+            self._get(self.treatments, treatment_id, "treatment")
+        return self._book(Plan(location_id, parse_date(day), start, n, d, s, room_id, treatment_id or None),
+                          name, client, doctor_id or None, booking_id)
 
     def book_list(self, location_id: str, day, items: list[dict], dry_run: bool = False) -> dict:
         """Go down a list of treatments with proposed start times and book them in order.
 
-        Each item is ``{treatment_id, start: "HH:MM", client?, location_id?, date?}`` and sees
-        the resources already used by the items before it.  The first item that can't be
+        An item is either a template, ``{treatment_id, start: "HH:MM", client?}``, or a treatment
+        given directly, ``{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?,
+        client?, doctor_id?, treatment_id?}`` (both may add ``location_id`` / ``date``).  Each item
+        sees the resources already used by the items before it.  The first item that can't be
         carried out (not enough doctor, room or staff, or outside opening hours) is reported
         as ``failed`` with the reasons, and processing STOPS there: the items after it are
         ``not_attempted``.  Items before it stay booked (unless ``dry_run``, which books
@@ -469,22 +588,37 @@ class Clinic:
         stopped_at = None
         for i, item in enumerate(items):
             known = self.treatments.get(item.get("treatment_id"))
-            row = {"index": i, "treatment_id": item.get("treatment_id"), "treatment": known.name if known else None,
+            custom = any(k in item for k in ("numbing_minutes", "doctor_minutes", "staff_minutes"))
+            shown = (item.get("name") or (known.name if known else "") or "Treatment") if custom else (known.name if known else None)
+            row = {"index": i, "treatment_id": item.get("treatment_id"), "treatment": shown,
                    "start": item.get("start"), "client": item.get("client", "")}
             results.append(row)
             if stopped_at is not None:
                 row["status"] = "not_attempted"
                 continue
             try:
-                for key in ("treatment_id", "start"):
+                for key in (("start",) if custom else ("treatment_id", "start")):
                     if not item.get(key):
                         raise ClinicError(f"Item {i + 1} is missing {key!r}")
-                row["treatment"] = self._get(self.treatments, item["treatment_id"], "treatment").name
                 loc, d, start = item.get("location_id") or location_id, item.get("date") or day, parse_time(item["start"])
-                av = self.check_availability(item["treatment_id"], loc, d, start)
-                if not av["available"]:
-                    raise ClinicError("; ".join(av["reasons"]))
-                b = self.book(item["treatment_id"], loc, d, start, item.get("client", ""))
+                if custom:
+                    args = dict(numbing_minutes=item.get("numbing_minutes", 0), doctor_minutes=item.get("doctor_minutes", 0),
+                                staff_minutes=item.get("staff_minutes", 0), room_id=item.get("room_id") or None,
+                                treatment_id=item.get("treatment_id") or None)
+                    check_step_minutes(args["numbing_minutes"], args["doctor_minutes"], args["staff_minutes"])
+                    if not args["room_id"]:
+                        raise ClinicError("Choose a room")
+                    av = self.check_custom(loc, d, start, **args)
+                    if not av["available"]:
+                        raise ClinicError("; ".join(av["reasons"]))
+                    b = self.book_custom(loc, d, start, name=item.get("name", ""), client=item.get("client", ""),
+                                         doctor_id=item.get("doctor_id") or None, **args)
+                else:
+                    row["treatment"] = self._get(self.treatments, item["treatment_id"], "treatment").name
+                    av = self.check_availability(item["treatment_id"], loc, d, start)
+                    if not av["available"]:
+                        raise ClinicError("; ".join(av["reasons"]))
+                    b = self.book(item["treatment_id"], loc, d, start, item.get("client", ""))
             except ClinicError as e:
                 row.update(status="failed", reasons=str(e).split("; ") if str(e) else ["not possible"])
                 stopped_at = i
@@ -603,11 +737,14 @@ class Clinic:
                 "people": [row("doctor", d) for d in self.doctors.values()]
                           + [row("staff", s) for s in self.staff.values()]}
 
+    def display_name(self, b: Booking) -> str:
+        known = self.treatments.get(b.treatment_id) if b.treatment_id else None
+        return b.name or (known.name if known else "Treatment")
+
     def describe_booking(self, b: Booking) -> dict:
-        t = self.treatments[b.treatment_id]
         doctor = self.doctors[b.doctor_id].name if b.doctor_id else None
         steps = []
-        for st in t.steps(b.start):
+        for st in b.steps():
             sid = b.staff.get(st.name)
             steps.append({"name": st.name, "label": st.label,
                           "start": format_slot(st.start), "end": format_slot(st.end),
@@ -616,7 +753,9 @@ class Clinic:
         staff_ids = list(dict.fromkeys(x["staff_id"] for x in steps if x["staff_id"]))
         return {
             "id": b.id, "client": b.client, "date": b.date.isoformat(),
-            "treatment_id": t.id, "treatment": t.name,
+            "treatment_id": b.treatment_id, "treatment": self.display_name(b), "name": b.name,
+            "numbing_minutes": b.numbing_slots * SLOT_MINUTES, "doctor_minutes": b.doctor_slots * SLOT_MINUTES,
+            "staff_minutes": b.staff_slots * SLOT_MINUTES,
             "location_id": b.location_id, "location": self.locations[b.location_id].name,
             "room_id": b.room_id, "room": self.rooms[b.room_id].name,
             "doctor_id": b.doctor_id, "doctor": doctor,
@@ -625,16 +764,16 @@ class Clinic:
             "start": format_slot(b.start), "end": format_slot(self._end(b)),
         }
 
-    # ---- consistency report ---------------------------------------------
     def _booking_problems(self, b: Booking) -> list[str]:
-        t, loc, day, end = self.treatments[b.treatment_id], self.locations[b.location_id], b.date, self._end(b)
+        t = self.treatments.get(b.treatment_id) if b.treatment_id else None
+        loc, day, end, name = self.locations[b.location_id], b.date, self._end(b), self.display_name(b)
         probs = []
         hours = loc.hours_on(day)
         if hours is None:
             probs.append(f"{loc.name} is closed on {day}")
         elif b.start < hours[0] or end > hours[1]:
             probs.append(f"outside {loc.name} opening hours ({format_slot(hours[0])}-{format_slot(hours[1])})")
-        for st in t.steps(b.start):
+        for st in b.steps():
             window = f"{format_slot(st.start)}-{format_slot(st.end)}"
             sid = b.staff.get(st.name)
             if not sid:
@@ -646,12 +785,14 @@ class Clinic:
                 if doc is None:
                     probs.append("no doctor assigned")
                 else:
-                    if t.id not in doc.treatments:
+                    if t and t.id not in doc.treatments:
                         probs.append(f"doctor {doc.name} is not qualified for {t.name}")
                     if self._person_status("doctor", doc.id, b.location_id, day, st.start, st.end, b.id) != "free":
                         probs.append(f"doctor {doc.name} unavailable for the doctor treatment {window}")
         room = self.rooms[b.room_id]
-        if not t.required_equipment <= room.equipment:
+        if room.location_id != b.location_id:
+            probs.append(f"room {room.name} is not at {loc.name}")
+        if t and not t.required_equipment <= room.equipment:
             probs.append(f"room {room.name} lacks the required equipment")
         if self._room_busy(room.id, day, b.start, end, b.id) or self._is_blocked("room", room.id, day, b.start, end):
             probs.append(f"room {room.name} unavailable")
@@ -666,7 +807,7 @@ class Clinic:
         for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start)):
             problems = self._booking_problems(b)
             if problems:
-                label = (f"Booking {b.id} ({self.treatments[b.treatment_id].name}, {b.date} "
+                label = (f"Booking {b.id} ({self.display_name(b)}, {b.date} "
                          f"{format_slot(b.start)}, {self.locations[b.location_id].name})")
                 out.append(f"{label}: " + "; ".join(dict.fromkeys(problems)))
         return out
@@ -701,9 +842,13 @@ class Clinic:
             "staff": [{"id": s.id, "name": s.name} for s in self.staff.values()],
             "presence": presence,
             "blocks": self._blocks_json(),
-            "bookings": [{"id": b.id, "treatment_id": b.treatment_id, "location_id": b.location_id,
-                          "room_id": b.room_id, "doctor_id": b.doctor_id, "staff": b.staff,
-                          "date": b.date.isoformat(), "start": format_slot(b.start), "client": b.client}
+            "bookings": [{"id": b.id, "name": b.name, "treatment_id": b.treatment_id,
+                          "location_id": b.location_id, "room_id": b.room_id,
+                          "date": b.date.isoformat(), "start": format_slot(b.start),
+                          "numbing_minutes": b.numbing_slots * SLOT_MINUTES,
+                          "doctor_minutes": b.doctor_slots * SLOT_MINUTES,
+                          "staff_minutes": b.staff_slots * SLOT_MINUTES,
+                          "doctor_id": b.doctor_id, "staff": b.staff, "client": b.client}
                          for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start))],
         }
 
@@ -770,17 +915,8 @@ class Clinic:
             if "duration_minutes" in t or "staff_required" in t:
                 raise ClinicError(f"Treatment {tid}: 'duration_minutes' / 'staff_required' are no longer used; "
                                   "give numbing_minutes, doctor_minutes and staff_minutes instead")
-            slots = []
-            for key in ("numbing_minutes", "doctor_minutes", "staff_minutes"):
-                minutes = t.get(key, 0)
-                if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0 or minutes % SLOT_MINUTES:
-                    raise ClinicError(f"Treatment {tid}: {key} must be 0 or a multiple of {SLOT_MINUTES}")
-                slots.append(minutes // SLOT_MINUTES)
-            if not any(slots):
-                raise ClinicError(f"Treatment {tid}: needs at least one step with minutes > 0")
-            if slots[1] == 0 and slots[0] > 0:
-                raise ClinicError(f"Treatment {tid}: numbing_minutes needs a doctor treatment; a staff-only "
-                                  "treatment (doctor_minutes 0) only uses staff_minutes")
+            slots = check_step_minutes(t.get("numbing_minutes", 0), t.get("doctor_minutes", 0),
+                                       t.get("staff_minutes", 0), f"Treatment {tid}")
             c.treatments[tid] = Treatment(tid, need(t, "name", f"treatment {tid}"), *slots,
                                           set(t.get("required_equipment", [])))
 
@@ -817,25 +953,33 @@ class Clinic:
             if "staff_ids" in b:
                 raise ClinicError(f"Booking {bid}: 'staff_ids' is no longer used; give 'staff' as "
                                   "{step: staff_id} for the numbing / doctor / staff steps")
+            tid = b.get("treatment_id") or None
+            template = c._get(c.treatments, tid, "treatment") if tid else None
+            minutes = [b.get(k) for k in ("numbing_minutes", "doctor_minutes", "staff_minutes")]
+            if all(m is None for m in minutes):      # older bookings only named a template
+                if template is None:
+                    raise ClinicError(f"Booking {bid}: give numbing_minutes / doctor_minutes / staff_minutes")
+                slots = (template.numbing_slots, template.doctor_slots, template.staff_slots)
+            else:
+                slots = check_step_minutes(*(m or 0 for m in minutes), f"Booking {bid}")
             booking = Booking(
-                bid, need(b, "treatment_id", "booking"), need(b, "location_id", "booking"),
-                need(b, "room_id", "booking"), b.get("doctor_id") or None,
-                dict(b.get("staff") or {}), parse_date(need(b, "date", "booking")),
-                parse_time(need(b, "start", "booking")), b.get("client", ""))
-            t = c._get(c.treatments, booking.treatment_id, "treatment")
+                bid, need(b, "location_id", "booking"), need(b, "room_id", "booking"),
+                parse_date(need(b, "date", "booking")), parse_time(need(b, "start", "booking")),
+                slots[0], slots[1], slots[2], b.get("doctor_id") or None, dict(b.get("staff") or {}),
+                b.get("name", ""), b.get("client", ""), tid)
             c._get(c.locations, booking.location_id, "location")
             room = c._get(c.rooms, booking.room_id, "room")
             if room.location_id != booking.location_id:
                 raise ClinicError(f"Booking {bid}: room {room.id} is not at location {booking.location_id}")
             if booking.doctor_id:
                 c._get(c.doctors, booking.doctor_id, "doctor")
-            real_steps = {st.name for st in t.steps(booking.start)}
+            real_steps = {st.name for st in booking.steps()}
             for step, sid in booking.staff.items():
                 if step not in real_steps:
-                    raise ClinicError(f"Booking {bid}: staff given for step {step!r}, which treatment "
-                                      f"{t.id} does not have (it has {sorted(real_steps)})")
+                    raise ClinicError(f"Booking {bid}: staff given for step {step!r}, which this booking "
+                                      f"does not have (it has {sorted(real_steps)})")
                 c._get(c.staff, sid, "staff")
-            _check_span(booking.start, booking.start + t.duration_slots, f"Booking {bid}")
+            _check_span(booking.start, booking.start + booking.duration_slots, f"Booking {bid}")
             c.bookings[bid] = booking
         return c
 

@@ -118,6 +118,22 @@ class ServerTests(unittest.TestCase):
         status, r = self.call("POST", "/api/book-list", {"location_id": "central", "date": day, "items": "nope"})
         self.assertEqual(status, 400)
 
+    def test_custom_treatments_via_book_list(self):
+        before = self.disk()
+        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()
+        item = dict(numbing_minutes=15, doctor_minutes=30, staff_minutes=15, room_id="central_laser_b",
+                    start="12:00", name="Mine", client="C")
+        body = {"location_id": "central", "date": day, "items": [item, dict(item, doctor_minutes=0)]}   # 2nd breaks the rule
+        status, r = self.call("POST", "/api/book-list", body)
+        self.assertEqual((status, [x["status"] for x in r["results"]]), (200, ["booked", "failed"]))
+        self.assertIn("numbing", " ".join(r["results"][1]["reasons"]))
+        self.assertEqual(r["results"][0]["booking"]["treatment"], "Mine")
+        self.assertEqual(self.disk(), before)                                        # in memory until saved
+        self.call("POST", "/api/save", {})
+        saved = Clinic.load_dir(self.dir)
+        mine = next(b for b in saved.bookings.values() if b.name == "Mine")
+        self.assertEqual((mine.room_id, mine.numbing_slots, mine.doctor_slots, mine.staff_slots), ("central_laser_b", 1, 2, 1))
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")
