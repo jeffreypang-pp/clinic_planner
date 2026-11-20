@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .auth import Auth, denied, handle_auth_route, mode_info
 from .lists import TreatmentLists
 from .model import Clinic, ClinicError, Conflict, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
@@ -252,19 +253,24 @@ def dispatch(app: "App", method: str, path: str, query: dict, body) -> tuple[int
         return 500, {"error": f"{type(e).__name__}: {e}"}
 
 
-def make_handler(app: App | None, stateless_dir: str | None = None):
+def make_handler(app: App | None, stateless_dir: str | None = None, auth: Auth | None = None):
     """HTTP handler for the local server.  With ``stateless_dir`` it serves the stateless API
-    (/api/mode, /api/initial, /api/call) instead of the stateful one, exactly like Vercel."""
+    (/api/mode, /api/initial, /api/call) instead of the stateful one, exactly like Vercel.
+    With an enabled ``auth`` every API call needs the password login (see ``clinic.auth``)."""
+    auth = auth or Auth()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet
             pass
 
-        def _send(self, status, payload, ctype="application/json"):
+        def _send(self, status, payload, ctype="application/json", headers=()):
             data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
 
@@ -275,9 +281,18 @@ def make_handler(app: App | None, stateless_dir: str | None = None):
             raw = b""
             if method in ("POST", "PUT"):
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            ip = self.client_address[0]
             if stateless_dir is not None:
-                from .stateless import serve
-                return self._send(*serve(method, url.path, raw, stateless_dir))
+                from .stateless import route
+                status, payload, extra = route(method, url.path, raw, stateless_dir, self.headers, auth, ip)
+                return self._send(status, payload, headers=extra)
+            response = handle_auth_route(auth, method, url.path, raw, self.headers, ip)
+            if response is None and method == "GET" and url.path == "/api/mode":
+                response = 200, {"mode": "server", **mode_info(auth, self.headers)}, []
+            if response is None:
+                response = denied(auth, self.headers)
+            if response:
+                return self._send(response[0], response[1], headers=response[2])
             body = None
             if method in ("POST", "PUT"):
                 try:
@@ -303,12 +318,15 @@ def main() -> None:
                     help="serve the stateless API used on Vercel: the browser keeps the working data, "
                          "the server never writes files (--data is then read-only)")
     args = ap.parse_args()
+    auth = Auth.from_env()
+    print("Password protection:", "ON (CLINIC_PASSWORD)" if auth.enabled else
+          "OFF (set CLINIC_PASSWORD to require a login)")
     if args.stateless:
         print(f"Clinic planner (stateless, like Vercel) on http://{args.host}:{args.port}  (read-only data: {args.data})")
-        handler = make_handler(None, stateless_dir=args.data)
+        handler = make_handler(None, stateless_dir=args.data, auth=auth)
     else:
         print(f"Clinic planner on http://{args.host}:{args.port}  (data: {args.data})")
-        handler = make_handler(App(args.data))
+        handler = make_handler(App(args.data), auth=auth)
     ThreadingHTTPServer((args.host, args.port), handler).serve_forever()
 
 

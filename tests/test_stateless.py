@@ -201,7 +201,8 @@ class VercelEntryPointTests(unittest.TestCase):
 
     def test_the_three_functions_work_end_to_end(self):
         with urllib.request.urlopen(self.urls["mode"]) as r:
-            self.assertEqual(json.load(r), {"mode": "stateless"})
+            mode = json.load(r)
+            self.assertEqual((mode["mode"], mode["auth"], mode["authenticated"]), ("stateless", False, True))
         with urllib.request.urlopen(self.urls["initial"]) as r:
             init = json.load(r)
             self.assertEqual(r.headers["Cache-Control"], "no-store")

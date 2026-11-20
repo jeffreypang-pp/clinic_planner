@@ -29,6 +29,30 @@ an explicit overwrite, and **Reload from disk** picks up the pulled version. Fil
 touched by a save. The files reference each other by id and are validated together. If `clinic_data/` has
 no files, a sample clinic is loaded (unsaved until you save it).
 
+## Password protection
+
+One shared password protects the app (`clinic/auth.py`). Set it in the environment, so it is never committed:
+
+```bash
+CLINIC_PASSWORD='something long' python -m clinic.server     # locally
+```
+
+On Vercel set `CLINIC_PASSWORD` in Project Settings → Environment Variables and redeploy.
+
+* **Every API call needs a login**, so no clinic data is served without one. The page itself contains no data; it just shows
+  a login screen first (and requests nothing until you are in).
+* A successful login sets a **signed, `HttpOnly`, `SameSite=Strict` cookie** (`Secure` over HTTPS) valid for 12 hours
+  (`CLINIC_SESSION_HOURS` to change). **Log out** is in the page header. Changing the password logs everyone out.
+  If the session ends mid-use the login reappears and your work in progress is kept; on Vercel, logging out also clears the
+  copy of your data kept in the browser.
+* **Wrong guesses are slowed down**, and after 5 a client is locked out for 10 minutes (per IP, per server process:
+  best effort on serverless, so add a Vercel Firewall rate-limit rule on `/api/login` if you want a hard limit).
+* **Fail closed on Vercel:** if `CLINIC_PASSWORD` isn't set there (Vercel sets `VERCEL`; or set `CLINIC_REQUIRE_PASSWORD=1`
+  anywhere), the data endpoints return 503 and the page says the password isn't set up.
+* Locally with no `CLINIC_PASSWORD` the app is open, as before.
+* It is a single shared password with no user accounts, and the password travels to the server on login, so use HTTPS
+  (Vercel always does) and a strong, unique password. For stricter control also turn on Vercel's *Deployment Protection*.
+
 ## Deploying to Vercel
 
 The repo is ready to import into Vercel as-is (`vercel.json`, `public/index.html`, `api/*.py`; standard library only,
@@ -56,8 +80,9 @@ or push to GitHub and "Import Project" in the Vercel dashboard (leave the framew
   is loaded as the starting set.
 * Each request carries the working data (well under Vercel's 4.5 MB request limit for a clinic this size).
 
-**Privacy:** `clinic_data/` is served to anyone who can open the site (staff and doctor names, bookings, ...). Turn on
-*Deployment Protection* (Vercel Authentication or a password) for the project before putting real data there.
+**Set the password** (see *Password protection* below): add `CLINIC_PASSWORD` under Project Settings → Environment
+Variables, then redeploy. A Vercel deployment **refuses to serve any data until a password is set**, because `clinic_data/`
+(staff and doctor names, bookings, ...) would otherwise be readable by anyone with the link.
 
 Try the Vercel behaviour locally without Vercel: `python -m clinic.server --stateless` (serves the same API and page).
 

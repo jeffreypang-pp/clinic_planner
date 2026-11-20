@@ -126,6 +126,13 @@
   .bk-steps { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .book-panel .btn { padding: 5px 10px; }
   .cell.booked.latest { box-shadow: 0 0 0 2px var(--away-text); position: relative; z-index: 1; }
+  #login { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); padding: 16px; }
+  #login[hidden] { display: none; }
+  #login form, #login .box { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+  #login h2 { margin: 0 0 4px; font-size: 18px; }
+  #login input { width: 100%; margin: 12px 0 10px; padding: 9px 10px; font-size: 15px; }
+  #login .btn { width: 100%; padding: 9px; }
+  #login .err { color: var(--bad); min-height: 1.4em; margin-top: 8px; font-size: 13px; }
   .gtabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .days label { flex-direction: row; align-items: center; gap: 3px; color: var(--text); font-size: 13px; }
 </style>
@@ -136,15 +143,28 @@
   <nav id="nav"></nav>
   <span class="spacer"></span>
   <div id="savebar"></div>
+  <button class="btn secondary" id="logout" hidden title="Log out of the app">Log out</button>
   <label>Date <input type="date" id="date"></label>
 </header>
+<div id="login" hidden>
+  <form id="login-form" autocomplete="on">
+    <h2>Clinic Planner</h2>
+    <div class="muted" id="login-msg">Enter the password to continue.</div>
+    <input type="password" id="login-pw" name="password" autocomplete="current-password" placeholder="Password" required>
+    <button class="btn" type="submit">Log in</button>
+    <div class="err" id="login-err" role="alert"></div>
+  </form>
+  <div class="box" id="login-setup" hidden><h2>Password not set up</h2>
+    <div class="muted">This deployment needs a password before it will show any data. Set <code>CLINIC_PASSWORD</code>
+      (Vercel: Project Settings → Environment Variables), then redeploy.</div></div>
+</div>
 <div id="banner"></div>
 <main id="main"></main>
 
 <script>
 const TABS = [["timetable", "Timetable"], ["availability", "Availability check"],
               ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
-const S = { stateless: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
+const S = { stateless: false, auth: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
@@ -168,9 +188,40 @@ async function rawFetch(method, path, body) {
   const res = await fetch(path, { method, headers: {"Content-Type": "application/json"},
                                   body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && S.auth) showLogin("Your session has ended. Please log in again; your work is kept.");
   if (!res.ok) { const err = new Error(data.error || res.statusText); err.status = res.status; throw err; }
   return data;
 }
+
+// ---------- password protection (see clinic/auth.py) ----------
+function showLogin(message, notConfigured) {
+  $("#login").hidden = false;
+  $("#login-form").hidden = !!notConfigured; $("#login-setup").hidden = !notConfigured;
+  if (message) $("#login-msg").textContent = message;
+  if (!notConfigured) setTimeout(() => $("#login-pw").focus(), 0);
+}
+$("#login-form").onsubmit = async e => {
+  e.preventDefault();
+  const btn = $("#login-form .btn"); btn.disabled = true; $("#login-err").textContent = "";
+  try {
+    const res = await fetch("/api/login", { method: "POST", headers: {"Content-Type": "application/json"},
+                                            body: JSON.stringify({ password: $("#login-pw").value }) });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) { S.unsaved = []; location.reload(); return; }   // reload: the work in progress is picked up again
+    $("#login-err").textContent = d.error || "Login failed"; $("#login-pw").select();
+  } catch (err) { $("#login-err").textContent = "Couldn't reach the server."; }
+  btn.disabled = false;
+};
+$("#logout").onclick = async () => {
+  const n = S.unsaved?.length || 0;
+  const msg = S.stateless
+    ? `Log out?\n\nThis also removes the copy of your data kept in this browser${n ? `, including your ${n} unsaved file change${n === 1 ? "" : "s"} (use Save… first to download them)` : ""}.`
+    : n ? `You have unsaved changes (${S.unsaved.map(u => u.file).join(", ")}). They stay on the server until it restarts. Log out anyway?` : "Log out?";
+  if (!confirm(msg)) return;
+  try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
+  if (S.stateless) try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+  S.unsaved = []; location.reload();
+};
 
 // Two modes. Normal: the local server holds the data in memory and writes files when you Save.
 // Stateless (the Vercel deployment): the server keeps nothing, so the browser holds the working data
@@ -389,7 +440,7 @@ async function viewTimetable() {
       const r = await api("PUT", "/api/presence", { role: cb.dataset.role, person_id: cb.dataset.id, date: S.date,
         location_id: cb.checked ? S.location : null });
       await loadClinic(); await viewTimetable();
-    } catch (err) { fail(err); await viewTimetable(); }
+    } catch (err) { fail(err); try { await viewTimetable(); } catch (e) {} }
   };
   $(".tt").onclick = e => {
     if (S.editAvail) return;
@@ -826,13 +877,18 @@ async function viewSetup() {
 // ---------- boot ----------
 (async () => {
   const d = new Date(); S.date = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  let ready = false;
   await guard(async () => {
     const mode = await fetch("/api/mode").then(r => r.ok ? r.json() : { mode: "server" }).catch(() => ({ mode: "server" }));
-    S.stateless = mode.mode === "stateless";
+    S.stateless = mode.mode === "stateless"; S.auth = !!mode.auth;
+    if (mode.misconfigured) return showLogin(null, true);                 // required password isn't set: show nothing
+    if (S.auth && !mode.authenticated) return showLogin();                // nothing is requested until logged in
+    $("#logout").hidden = !S.auth;
     if (S.stateless) await initStatelessState();
     await loadClinic();
+    ready = true;
   });
-  render();
+  if (ready) render();
 })();
 </script>
 </body>

@@ -26,6 +26,7 @@ import os
 import threading
 from pathlib import Path
 
+from .auth import Auth, denied, handle_auth_route, mode_info
 from .lists import MemoryLists, TreatmentLists
 from .model import Clinic, ClinicError, Conflict, GROUPS
 from .sample import build_sample
@@ -151,16 +152,53 @@ def serve(method: str, path: str, raw_body: bytes = b"", directory: str | None =
         return 500, {"error": f"{type(e).__name__}: {e}"}
 
 
+def route(method: str, path: str, raw_body: bytes = b"", directory: str | None = None, headers=None,
+          auth: Auth | None = None, fallback_ip: str = "?") -> tuple[int, dict, list]:
+    """``serve`` behind the password (see ``clinic.auth``): handles /api/login and /api/logout,
+    reports login state on /api/mode, and answers 401/503 to everything else until the request
+    carries a valid session.  Returns ``(http_status, json_payload, extra_headers)``."""
+    auth = auth or Auth()                       # no password configured: open
+    route_ = path.split("?")[0].rstrip("/")
+    response = handle_auth_route(auth, method, route_, raw_body, headers, fallback_ip)
+    if response:
+        return response
+    if method == "GET" and route_ == "/api/mode":
+        return 200, {"mode": "stateless", **mode_info(auth, headers)}, []
+    blocked = denied(auth, headers)
+    if blocked:
+        return blocked
+    status, payload = serve(method, path, raw_body, directory)
+    return status, payload, []
+
+
+_AUTH_CACHE: dict = {}
+
+
+def get_auth() -> Auth:
+    """The ``Auth`` for this process, built from the environment (kept across warm invocations so
+    the wrong-password throttle persists; rebuilt if the settings change)."""
+    env = os.environ
+    key = tuple(env.get(k) for k in ("CLINIC_PASSWORD", "VERCEL", "CLINIC_REQUIRE_PASSWORD",
+                                     "CLINIC_SESSION_HOURS", "CLINIC_SECRET"))
+    if key not in _AUTH_CACHE:
+        _AUTH_CACHE.clear()
+        _AUTH_CACHE[key] = Auth.from_env()
+    return _AUTH_CACHE[key]
+
+
 def respond(handler, method: str, endpoint: str) -> None:
     """Answer one request on a ``BaseHTTPRequestHandler`` (what the files in ``api/`` call)."""
     raw = b""
     if method == "POST":
         raw = handler.rfile.read(int(handler.headers.get("Content-Length") or 0))
-    status, payload = serve(method, f"/api/{endpoint}", raw)
+    status, payload, extra = route(method, f"/api/{endpoint}", raw, None, handler.headers, get_auth(),
+                                   handler.client_address[0])
     data = json.dumps(payload).encode()
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(data)))
     handler.send_header("Cache-Control", "no-store")
+    for name, value in extra:
+        handler.send_header(name, value)
     handler.end_headers()
     handler.wfile.write(data)
