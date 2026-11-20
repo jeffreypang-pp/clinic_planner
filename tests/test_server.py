@@ -165,6 +165,28 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.call("DELETE", "/api/lists?name=Plan%20A")[0], 404)
         self.assertEqual(self.disk(), before)
 
+    def test_assigning_staff_later_via_the_api(self):
+        before = self.disk()
+        c = self.app.clinic
+        day = next(iter(c.bookings.values())).date.isoformat()
+        base = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="central_laser_b", start="12:00")
+        status, r = self.call("POST", "/api/book-list", {"location_id": "central", "date": day, "items": [base]})
+        booking = r["results"][0]["booking"]
+        self.assertEqual((booking["unassigned_steps"], booking["steps"][0]["staff"]), (1, None))
+        options = [o["id"] for o in booking["steps"][0]["staff_options"]]
+        self.assertTrue(options)
+        status, r = self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"staff": options[0]}})
+        self.assertEqual((status, r["booking"]["unassigned_steps"], r["booking"]["steps"][0]["staff_id"]), (200, 0, options[0]))
+        self.assertEqual(self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"staff": "ghost"}})[0], 404)
+        self.assertEqual(self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"numbing": options[0]}})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/bookings/nope/staff", {"staff": {}})[0], 404)
+        status, r = self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"staff": None}})
+        self.assertEqual(r["booking"]["unassigned_steps"], 1)
+        status, r = self.call("GET", f"/api/timetable?location=central&date={day}")
+        self.assertIn("staff_total", r)
+        self.assertEqual(max(r["staff_total"]["needed"]), 1)
+        self.assertEqual(self.disk(), before)                                     # all in memory until saved
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")

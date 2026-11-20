@@ -13,7 +13,7 @@ import os
 import tempfile
 from datetime import datetime
 
-from .model import (Clinic, ClinicError, Conflict, NotFound, _dumps, check_step_minutes,
+from .model import (STEP_NAMES, Clinic, ClinicError, Conflict, NotFound, _dumps, check_step_minutes,
                     format_slot, parse_time)
 
 FILE_NAME = "treatment_lists.json"
@@ -97,8 +97,13 @@ class TreatmentLists:
         what = f"Treatment {n}"
         if not isinstance(item, dict):
             raise ClinicError(f"{what}: must be an object")
-        check_step_minutes(item.get("numbing_minutes", 0), item.get("doctor_minutes", 0),
-                           item.get("staff_minutes", 0), what)
+        slots = check_step_minutes(item.get("numbing_minutes", 0), item.get("doctor_minutes", 0),
+                                   item.get("staff_minutes", 0), what)
+        active = {step for step, n in zip(STEP_NAMES, slots) if n}
+        try:    # who does which step: a staff id, or null = "assign later"
+            named = clinic._step_staff(active, item.get("staff"))
+        except ClinicError as e:
+            raise type(e)(f"{what}: {e}") from None
         start = item.get("start")
         if not start:
             raise ClinicError(f"{what}: missing 'start'")
@@ -117,6 +122,7 @@ class TreatmentLists:
                 "doctor_minutes": item.get("doctor_minutes", 0),
                 "staff_minutes": item.get("staff_minutes", 0),
                 "room_id": room_id, "doctor_id": doctor_id,
+                "staff": {step: named.get(step) for step in STEP_NAMES if step in active},
                 "start": format_slot(parse_time(start)),
                 "client": str(item.get("client") or "").strip()[:200]}
 

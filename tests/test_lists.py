@@ -77,6 +77,25 @@ class ListStorageTests(unittest.TestCase):
             self.lists.save(self.c, "ok", "a", [item(), item(doctor_minutes=0)])
         self.assertIn("Treatment 2", str(cm.exception))              # says which row is wrong
 
+    def test_named_staff_are_saved_per_step_and_validated(self):
+        items = [item(staff={"numbing": "s1", "doctor": None, "staff": "s2"}),
+                 item(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, staff={"staff": "s1"})]
+        self.lists.save(self.c, "named", "a", items)
+        got = self.lists.all(self.c)[0]["items"]
+        self.assertEqual(got[0]["staff"], {"numbing": "s1", "doctor": None, "staff": "s2"})
+        self.assertEqual(got[1]["staff"], {"staff": "s1"})                       # only the steps it has
+        self.lists.save(self.c, "later", "a", [item()])                          # nothing named = assign later
+        later = next(x for x in self.lists.all(self.c) if x["name"] == "later")
+        self.assertEqual(later["items"][0]["staff"], {"numbing": None, "doctor": None, "staff": None})
+        for bad, text in ((dict(staff={"numbing": "ghost"}), "ghost"),
+                          (dict(numbing_minutes=0, staff={"numbing": "s1"}), "numbing step"),
+                          (dict(staff={"bogus": "s1"}), "Unknown step"),
+                          (dict(staff=["s1"]), "staff as")):
+            with self.assertRaises(ClinicError, msg=str(bad)) as cm:
+                self.lists.save(self.c, "bad", "a", [item(**bad)])
+            self.assertIn(text, str(cm.exception))
+            self.assertIn("Treatment 1", str(cm.exception))
+
     def test_a_row_without_a_room_can_be_saved(self):
         self.lists.save(self.c, "norooms", "a", [item(room_id=None)])
         self.assertIsNone(self.lists.all(self.c)[0]["items"][0]["room_id"])

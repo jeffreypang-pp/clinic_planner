@@ -88,6 +88,21 @@ class StatelessTests(unittest.TestCase):
         # the request's own state object is not modified in place
         self.assertEqual(before["groups"]["schedule"], self.call("GET", "/api/clinic", state=before)["result"]["groups"]["schedule"])
 
+    def test_naming_staff_later_works_statelessly(self):
+        item = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="central_laser_b", start="12:00")
+        out = self.call("POST", "/api/book-list", {"location_id": "central", "date": self.day, "items": [item]})
+        booking = out["result"]["results"][0]["booking"]
+        self.assertEqual(booking["unassigned_steps"], 1)
+        who = booking["steps"][0]["staff_options"][0]["id"]
+        out = self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"staff": who}})
+        self.assertEqual((out["status"], out["result"]["booking"]["unassigned_steps"]), (200, 0))
+        saved = next(b for b in out["state"]["groups"]["schedule"]["bookings"] if b["id"] == booking["id"])
+        self.assertEqual(saved["staff"], {"staff": who})                       # the new state carries the name
+        bad = self.call("PUT", f"/api/bookings/{booking['id']}/staff", {"staff": {"staff": "ghost"}})
+        self.assertEqual(bad["status"], 404)
+        tot = self.call("GET", "/api/timetable", query={"location": ["central"], "date": [self.day]})["result"]["staff_total"]
+        self.assertEqual(max(tot["needed"]), 1)
+
     def test_errors_are_reported_with_status_and_leave_state_alone(self):
         before = copy.deepcopy(self.state)
         out = self.call("POST", "/api/book-list", {"location_id": "central", "date": self.day, "items": "nope"})

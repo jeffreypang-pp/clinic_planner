@@ -124,6 +124,15 @@
   .bk-mins select { width: 100%; }
   .bk-edit .grow { flex: 1; min-width: 0; }
   .bk-steps { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .bk-step { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 3px; }
+  .bk-step select, td select.assign { max-width: 150px; font-size: 12px; padding: 2px 4px; }
+  .tt-row.total-row { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
+  .tt-row.total-row .tt-label { font-weight: 600; }
+  .cell.tot { text-align: center; line-height: 26px; font-size: 11px; font-weight: 700; }
+  .cell.tot.none { background: transparent; border: 1px dashed var(--line); }
+  .cell.tot.ok { background: var(--free); border: 1px solid var(--free-line); }
+  .cell.tot.full { background: var(--away); color: var(--away-text); }
+  .cell.tot.over { background: var(--bad-bg); color: var(--bad); box-shadow: inset 0 0 0 2px var(--bad); }
   .book-panel .btn { padding: 5px 10px; }
   .cell.booked.latest { box-shadow: 0 0 0 2px var(--away-text); position: relative; z-index: 1; }
   #login { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); padding: 16px; }
@@ -182,6 +191,13 @@ const describeSteps = t => t.doctor_minutes === 0
   : [t.numbing_minutes && `${t.numbing_minutes} min numbing (1 staff)`, `${t.doctor_minutes} min doctor treatment (doctor + 1 staff)`,
      t.staff_minutes && `${t.staff_minutes} min staff treatment (1 staff)`].filter(Boolean).join(" → ");
 const STEP_TAG = { numbing: " · numbing", doctor: "", staff: " · staff tx", all: "" };
+const STEP_KEYS = ["numbing", "doctor", "staff"];                       // a row's minutes fields are named like the steps
+const activeSteps = it => STEP_KEYS.filter(k => +it[k] > 0);
+// who does which step: a staff id, or null = "assign later" (then it only counts as one staff member needed)
+const staffPayload = it => Object.fromEntries(activeSteps(it).map(k => [k, it.staffIds[k] || null]));
+const stepWho = x => [x.doctor, x.staff || "assign later"].filter(Boolean).join(" + ");
+// a select to name (or clear) the staff member of one step of a booking
+const assignSelect = (b, x) => `<select class="assign" data-assign="${b.id}" data-step="${x.name}" title="Who does this step. “assign later” still counts as one staff member needed."><option value="">assign later</option>${x.staff_options.map(o => `<option value="${o.id}" ${o.id === x.staff_id ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select>`;
 const locs = () => S.clinic.locations;
 
 async function rawFetch(method, path, body) {
@@ -380,7 +396,7 @@ async function viewTimetable() {
         const [, bid, step] = c.split(":");
         const b = bookings[bid];
         const label = b ? `${b.treatment}${STEP_TAG[step] || ""}${b.client ? " · " + b.client : ""}` : "";
-        html += `<div class="cell booked${bid === S.list.last ? " latest" : ""}" style="grid-column: span ${j - i}" title="${esc(b ? `${b.treatment} ${b.start}-${b.end}  (room: ${b.room})\n` + b.steps.map(x => `${x.start}-${x.end} ${x.label}: ${[x.doctor, x.staff].filter(Boolean).join(" + ")}`).join("\n") + `\nClient: ${b.client || "-"}` : "")}">${esc(label)}</div>`;
+        html += `<div class="cell booked${bid === S.list.last ? " latest" : ""}" style="grid-column: span ${j - i}" title="${esc(b ? `${b.treatment} ${b.start}-${b.end}  (room: ${b.room})\n` + b.steps.map(x => `${x.start}-${x.end} ${x.label}: ${stepWho(x)}`).join("\n") + `\nClient: ${b.client || "-"}` : "")}">${esc(label)}</div>`;
         i = j; continue;
       }
       const time = slotStr(i);
@@ -388,6 +404,16 @@ async function viewTimetable() {
       else if (c.startsWith("away:")) html += `<div class="cell away" title="${time} — at ${esc(locName(c.slice(5)))}">${esc(locName(c.slice(5))[0])}</div>`;
       else html += `<div class="cell ${c}" title="${time} — ${{off: "not in any location today", closed: "closed", blocked: "blocked (unavailable)"}[c]}"></div>`;
       i++;
+    }
+    return html + "</div>";
+  }
+  function totalRowHtml() {   // staff needed in each 15-minute block, named or "assign later", against staff available
+    const tot = t.staff_total; if (!tot) return "";
+    let html = `<div class="tt-row total-row" style="${cols}"><div class="tt-label" title="How many staff the treatments need in each 15-minute block (named or “assign later”). Hover a cell to compare with the staff ticked in and not blocked."><b>Total staff</b> <small>needed</small></div>`;
+    for (let i = lo; i < hi; i++) {
+      const need = tot.needed[i], have = tot.available[i];
+      const cls = need === 0 ? "none" : need > have ? "over" : need === have ? "full" : "ok";
+      html += `<div class="cell tot ${cls}" title="${slotStr(i)} — ${need} staff needed, ${have} available${need > have ? " (shortage)" : need && need === have ? " (all in use)" : ""}">${need || ""}</div>`;
     }
     return html + "</div>";
   }
@@ -406,11 +432,12 @@ async function viewTimetable() {
       <span style="--c:var(--free)">free</span><span style="--c:var(--booked)">booked</span>
       <span style="--c:var(--away)">at another location (initial shown)</span>
       <span style="--c:var(--off)">not in any location today</span><span style="--c:var(--closed)">closed</span><span style="--c:var(--blocked)">blocked</span>
+      <span style="--c:var(--away)">Total staff: all staff in use</span>
       <span>each cell = 15 min</span>
     </div>
     <div class="card tt">${header}
       ${section("Doctors", people(t.doctors), away, "doctor")}
-      ${section("Staff", people(t.staff), away, "staff")}
+      ${section("Staff", people(t.staff), away, "staff")}${totalRowHtml()}
       ${section("Treatment rooms", t.rooms, null, "room")}
     </div>
     <div id="editbar" class="card" ${S.editAvail ? "" : "hidden"}></div>
@@ -461,7 +488,7 @@ const roomsHere = () => S.tt?.rooms || [];
 const fitRoom = presetId => { const t = byId(S.clinic.treatments, presetId), rooms = roomsHere();
   return (t && rooms.find(r => t.required_equipment.every(e => r.equipment.includes(e))))?.id || rooms[0]?.id || null; };
 const newItem = from => ({ preset: from?.preset || "", name: from?.preset ? from.name : "", numbing: from?.numbing ?? 15, doctor: from?.doctor ?? 30,
-  staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", start: from?.start || "10:00", client: "",
+  staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", staffIds: {}, start: from?.start || "10:00", client: "",
   status: "pending", booking: null, reasons: [], preview: null, note: "", touched: false });
 const resetItem = it => { if (it.status === "failed") it.status = "pending"; it.reasons = []; it.preview = null; it.note = ""; S.list.summary = ""; };
 function applyPreset(it, id) {   // optional template: fills the name and the three times, picks a room with its equipment
@@ -475,6 +502,11 @@ function fixItem(it) {   // keep a row consistent with where we are and with the
     if (had) it.note = "The room it had isn't at this location (or no longer exists): check the room.";
   }
   if (+it.doctor === 0) it.numbing = 0;
+  const here = new Set((S.tt?.staff || []).filter(r => r.here).map(r => r.id)), on = new Set(activeSteps(it));
+  for (const k of Object.keys(it.staffIds)) {   // a named staff member must be ticked in here, and the step must exist
+    if (!on.has(k)) delete it.staffIds[k];
+    else if (it.staffIds[k] && !here.has(it.staffIds[k])) { delete it.staffIds[k]; it.note = "A named staff member isn't ticked in at this location, so that step is back to “assign later”."; }
+  }
 }
 // Fill the next not-yet-booked row. With {append: true} (used when sending from another tab) a row the user has
 // already edited is never overwritten: an untouched blank row is reused, otherwise a new row is added.
@@ -488,14 +520,17 @@ function drawBookingPanel() {
   if (!rooms.length) { panel.innerHTML = `<h3>Add treatments</h3><div class="muted">${esc(t.location)} has no treatment rooms yet. Add some under <b>Setup &amp; save</b> (<code>rooms</code> in resources.json).</div>`; return; }
   if (!L.items.some(i => i.status !== "booked")) L.items.push(newItem(L.items[L.items.length - 1]));
   L.items.forEach(it => { if (it.status !== "booked") fixItem(it); });
-  const steps = b => b.steps.map(x => `${esc(x.label)} ${x.start}–${x.end}: ${esc([x.doctor, x.staff].filter(Boolean).join(" + "))}`).join("<br>");
+  const steps = b => b.steps.map(x => `${esc(x.label)} ${x.start}–${x.end}: ${esc(stepWho(x))}`).join("<br>");
   const detail = b => `Room: ${esc(b.room)}${b.doctor ? " · " + esc(b.doctor) : ""}<div class="bk-steps">${steps(b)}</div>`;
+  const bookedDetail = b => `Room: ${esc(b.room)}${b.doctor ? " · " + esc(b.doctor) : ""}<div class="bk-steps">` +
+    b.steps.map(x => `<div class="bk-step"><span>${esc(x.label)} ${x.start}–${x.end}${x.doctor ? " · " + esc(x.doctor) : ""}</span>${assignSelect(b, x)}</div>`).join("") + `</div>`;
+  const hereStaff = (S.tt?.staff || []).filter(r => r.here);
   const endOf = it => slotStr(Math.min(96, (+it.start.slice(0, 2)) * 4 + (+it.start.slice(3)) / 15 + (+it.numbing + +it.doctor + +it.staff) / 15));
   const rows = L.items.map((it, i) => {
     if (it.status === "booked") { const b = it.booking, away = b.location_id !== S.location || b.date !== S.date;
       return `<div class="bk-row ok" data-i="${i}"><span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
         <button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button>
-        <div class="muted">${away ? `${esc(b.location)} · ${b.date}<br>` : ""}${detail(b)}</div></div>`; }
+        <div class="muted">${away ? `${esc(b.location)} · ${b.date}<br>` : ""}${bookedDetail(b)}</div></div>`; }
     const p = it.preview, total = +it.numbing + +it.doctor + +it.staff;
     const preview = !p ? "" : p.status === "booked" ? `<span class="pill yes">can be done</span><div class="muted">${detail(p.booking)}</div>`
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
@@ -510,6 +545,8 @@ function drawBookingPanel() {
         <label title="Staff treatment: 1 staff">Staff (min)<select data-f="staff">${minOpts(it.staff)}</select></label></div>
       <div class="bk-edit"><label class="grow">Room<select data-f="room">${rooms.map(r => `<option value="${r.id}" ${r.id === it.room ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
         ${+it.doctor > 0 ? `<label class="grow">Doctor<select data-f="doctorId"><option value="">any available</option>${S.clinic.doctors.map(d => `<option value="${d.id}" ${d.id === it.doctorId ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>` : ""}</div>
+      ${activeSteps(it).length ? `<div class="bk-mins" style="grid-template-columns: repeat(${activeSteps(it).length}, 1fr)">${activeSteps(it).map(k => `
+        <label title="Who does this step. “assign later” leaves it open: it still counts as one staff member needed (see Total staff).">${{numbing: "Numbing", doctor: "Doctor-step", staff: "Staff-step"}[k]} staff<select data-f="staff:${k}"><option value="">assign later</option>${hereStaff.map(r => `<option value="${r.id}" ${r.id === it.staffIds[k] ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>`).join("")}</div>` : ""}
       <div class="bk-edit"><input data-f="client" placeholder="client (optional)" value="${esc(it.client)}"><button class="link" data-rm="${i}">remove</button></div>
       <div class="muted">${total ? `Total ${total} min, ${it.start}–${endOf(it)}` : "Set at least one time above 0"}${+it.doctor === 0 ? " · staff alone, no doctor" : ""}${it.preset ? " · template skills/equipment apply" : ""}</div>
       ${it.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${it.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
@@ -524,7 +561,8 @@ function drawBookingPanel() {
         : `<span class="muted">no saved lists yet</span>`}</div>
     <details style="margin-bottom:8px"><summary class="muted" style="cursor:pointer">How this works</summary>
       <div class="muted" style="margin-top:4px">Give the numbing, doctor treatment and staff treatment times and the room, then press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
-      Doctor and staff are assigned automatically. Numbing is 0 when there is no doctor treatment. Click a free cell to use that time (and, on a room row, that room).
+      The doctor is chosen automatically (or pick one). Staff are interchangeable: leave a step on <b>assign later</b> (it still counts as one staff member in the <b>Total staff</b> row) or name someone, and name them afterwards from the booked row.
+      The staff needed in any 15-minute block can't exceed the staff ticked in, and a named person can't be in two overlapping steps. Numbing is 0 when there is no doctor treatment. Click a free cell to use that time (and, on a room row, that room).
       A treatment that can't be carried out (not enough doctor, staff or room) is reported and nothing is booked for it.
       <b>Save list…</b> stores the treatments in this list (times, rooms, names, clients; not the bookings) so you can <b>Load</b> them again later.</div></details>
     ${rows}
@@ -538,9 +576,11 @@ function drawBookingPanel() {
   panel.oninput = e => { const row = e.target.closest("[data-i]"), f = e.target.dataset.f;
     if (row && (f === "client" || f === "name")) { const it = L.items[+row.dataset.i]; it[f] = e.target.value; it.touched = true; } };
   panel.onchange = e => { const el = e.target, row = el.closest("[data-i]"), f = el.dataset.f;
+    if (el.dataset.assign) return guard(() => assignStaff(el.dataset.assign, el.dataset.step, el.value));
     if (!row || !f || f === "client" || f === "name") return;
     const it = L.items[+row.dataset.i];
-    if (f === "preset") applyPreset(it, el.value); else it[f] = el.value;
+    if (f.startsWith("staff:")) it.staffIds[f.slice(6)] = el.value;
+    else if (f === "preset") applyPreset(it, el.value); else it[f] = el.value;
     it.touched = true; resetItem(it); drawBookingPanel(); };
   panel.onclick = e => { const el = e.target;
     if (el.id === "bk-add") { L.items.push(newItem(L.items[L.items.length - 1])); drawBookingPanel(); }
@@ -561,7 +601,7 @@ function drawBookingPanel() {
 
 // ---------- saved lists: explicit, confirmed saves into treatment_lists.json; load replaces the list in this panel ----------
 const toApiItem = it => ({ name: it.name, treatment_id: it.preset || null, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor,
-  staff_minutes: +it.staff, room_id: it.room, doctor_id: it.doctorId || null, start: it.start, client: it.client });
+  staff_minutes: +it.staff, room_id: it.room, doctor_id: it.doctorId || null, staff: staffPayload(it), start: it.start, client: it.client });
 async function saveList() {
   const L = S.list, t = S.tt;
   if (!L.items.length) throw new Error("The list is empty: add a treatment first.");
@@ -581,7 +621,8 @@ async function loadList(name) {
   if (L.items.some(i => i.status === "booked" || i.touched) &&
       !confirm(`Replace the list in this panel with “${l.name}” (${l.count} treatment${l.count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
   L.items = l.items.map(x => Object.assign(newItem(), { preset: x.treatment_id || "", name: x.name || "", numbing: x.numbing_minutes,
-    doctor: x.doctor_minutes, staff: x.staff_minutes, room: x.room_id, doctorId: x.doctor_id || "", start: x.start, client: x.client || "", touched: true }));
+    doctor: x.doctor_minutes, staff: x.staff_minutes, room: x.room_id, doctorId: x.doctor_id || "", start: x.start, client: x.client || "", touched: true,
+    staffIds: Object.fromEntries(Object.entries(x.staff || {}).filter(([, v]) => v)) }));
   L.summary = ""; L.last = null; L.scrollNext = true; S.listName = l.name;
   const moved = l.location_id && l.location_id !== S.location && byId(locs(), l.location_id);
   if (moved) S.location = l.location_id;   // a list belongs to a location (its rooms)
@@ -593,6 +634,22 @@ async function deleteList(name) {
   const r = await api("DELETE", `/api/lists?name=${encodeURIComponent(name)}`);
   S.savedLists = r.lists; if (S.listName === name) S.listName = null; drawBookingPanel();
   banner("ok", `Deleted the saved list “${esc(name)}”.`, 3000);
+}
+// name (or clear) who does a step of an existing booking; the server enforces the staff rules
+async function assignStaff(bookingId, step, staffId) {
+  const keep = $("#book-panel")?.scrollTop || 0;
+  try {
+    const r = await api("PUT", `/api/bookings/${bookingId}/staff`, { staff: { [step]: staffId || null } });
+    const it = S.list.items.find(i => i.booking?.id === bookingId); if (it) it.booking = r.booking;
+    await loadClinic(); await viewTimetable();
+    const panel = $("#book-panel"); if (panel) panel.scrollTop = keep;
+  } catch (e) {
+    fail(e); if (S.tab === "timetable") drawBookingPanel(); else await render();   // put the select back
+  }
+}
+async function assignStaffRoster(bookingId, step, staffId) {
+  try { await api("PUT", `/api/bookings/${bookingId}/staff`, { staff: { [step]: staffId || null } }); await loadClinic(); await viewRoster(); }
+  catch (e) { fail(e); await viewRoster(); }
 }
 async function cancelBooked(i) {
   const it = S.list.items[i];
@@ -608,7 +665,7 @@ async function runBooking(mode) {   // "next" | "all" | "check" (dry run)
   const r = await api("POST", "/api/book-list", { location_id: S.location, date: S.date, dry_run: mode === "check",
     items: use.map(i => { const it = L.items[i];
       return { name: it.name, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor, staff_minutes: +it.staff, room_id: it.room,
-               doctor_id: it.doctorId || undefined, treatment_id: it.preset || undefined, start: it.start, client: it.client }; }) });
+               doctor_id: it.doctorId || undefined, treatment_id: it.preset || undefined, staff: staffPayload(it), start: it.start, client: it.client }; }) });
   r.results.forEach((x, k) => { const it = L.items[use[k]]; it.reasons = []; it.preview = null; it.note = "";
     if (mode === "check") it.preview = { status: x.status, reasons: x.reasons || [], booking: x.booking };
     else if (x.status === "booked") { it.status = "booked"; it.booking = x.booking; L.last = x.booking.id; }
@@ -733,7 +790,7 @@ function drawAvailResults() {
     <div class="card">
       <h3>${esc(r.location)} · ${r.start}–${r.end} <span class="pill ${r.available ? "yes" : "no"}">${r.available ? "available" : "not available"}</span></h3>
       ${r.reasons.length ? `<ul class="reasons">${r.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-      <table>${r.steps.map(st => `<tr><th>${esc(st.label)} ${st.start}–${st.end}</th><td>${st.needs_doctor ? `<b>Doctor:</b> ${esc(r.doctors.map(d => d.name).join(", ") || "—")}<br>` : ""}<b>Staff free:</b> ${esc(st.staff.map(d => d.name).join(", ") || "—")}</td></tr>`).join("")}
+      <table>${r.steps.map(st => `<tr><th>${esc(st.label)} ${st.start}–${st.end}</th><td>${st.needs_doctor ? `<b>Doctor:</b> ${esc(r.doctors.map(d => d.name).join(", ") || "—")}<br>` : ""}<b>Staff:</b> ${st.capacity_left} more can be used here${st.staff.length ? ` · could be named: ${esc(st.staff.map(d => d.name).join(", "))}` : ""}</td></tr>`).join("")}
       <tr><th>Rooms free (whole treatment)</th><td>${esc(r.rooms.map(d => d.name).join(", ") || "—")}</td></tr></table>
       ${r.available ? `<div class="row" style="margin:12px 0 0"><button class="btn" data-use="${i}">Add to Timetable booking list →</button></div>` : ""}
     </div>`).join("");
@@ -781,7 +838,7 @@ async function viewRoster() {
     <div class="card"><h3>Bookings on ${esc(S.date)}</h3>
       ${bookings.length ? `<table><tr><th>Time</th><th>Treatment</th><th>Location / room</th><th>Doctor</th><th>Staff</th><th>Client</th><th></th></tr>` +
         bookings.map(b => `<tr><td>${b.start}–${b.end}</td><td>${esc(b.treatment)}</td><td>${esc(b.location)} / ${esc(b.room)}</td>
-          <td>${esc(b.doctor || "— (staff only)")}</td><td>${esc(b.staff.join(", ") || "—")}</td><td>${esc(b.client)}</td>
+          <td>${esc(b.doctor || "— (staff only)")}</td><td>${b.steps.map(x => `<div><span class="muted">${esc(x.label)}:</span> ${assignSelect(b, x)}</div>`).join("")}</td><td>${esc(b.client)}</td>
           <td><button class="link" data-del-booking="${b.id}">cancel</button></td></tr>`).join("") + "</table>"
         : `<span class="muted">No bookings.</span>`}
     </div>`;
@@ -791,6 +848,7 @@ async function viewRoster() {
     if (!S.issues.length) banner("ok", `Roster updated (${r.days} day${r.days > 1 ? "s" : ""}).`, 3000);
   });
   $("#main").onchange = e => { const t = e.target;
+    if (t.dataset.assign) return guard(async () => { await assignStaffRoster(t.dataset.assign, t.dataset.step, t.value); });
     if (t.matches("table.roster select")) savePresence(t.dataset.role, t.dataset.id, [t.dataset.date], t.value); };
   $("#f-who").onchange = e => F.who = e.target.value;
   $("#f-loc").onchange = e => F.location = e.target.value;

@@ -115,7 +115,8 @@ class App:
     def post_booking(self, q, body):
         b = self.clinic.book(_need(body, "treatment_id"), _need(body, "location_id"), _need(body, "date"),
                              parse_time(_need(body, "start")), body.get("client", ""),
-                             body.get("doctor_id") or None, body.get("room_id") or None)
+                             body.get("doctor_id") or None, body.get("room_id") or None,
+                             staff=body.get("staff"))
         return {"booking": self.clinic.describe_booking(b)}
 
     def post_book_list(self, q, body):
@@ -146,6 +147,11 @@ class App:
         """Remove all bookings and blocks for a location on a date (``dry_run`` previews)."""
         return self.clinic.clear_day(_need(body, "location_id"), _need(body, "date"),
                                      bool(body.get("dry_run")))
+
+    def put_booking_staff(self, q, body, bid):
+        """Name (or clear) who does which step of an existing booking: ``{"staff": {step: id | null}}``."""
+        b = self.clinic.set_booking_staff(bid, _need(body, "staff"))
+        return {"booking": self.clinic.describe_booking(b), "issues": self.clinic.issues()}
 
     def delete_booking(self, q, body, bid):
         self.clinic.cancel_booking(bid)
@@ -225,6 +231,7 @@ ROUTES = [
     ("DELETE", r"/api/lists", "delete_list"),
     ("POST", r"/api/clear-day", "post_clear_day"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
+    ("PUT", r"/api/bookings/([\w-]+)/staff", "put_booking_staff"),
     ("PUT", r"/api/presence", "put_presence"),
     ("GET", r"/api/roster", "get_roster"),
     ("PUT", r"/api/availability", "put_availability"),
