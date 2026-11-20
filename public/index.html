@@ -183,6 +183,29 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const slotStr = i => String(Math.floor(i / 4)).padStart(2, "0") + ":" + String((i % 4) * 15).padStart(2, "0");
 const timeOptions = (sel, max = 96) => Array.from({length: max + 1}, (_, i) =>
   `<option value="${slotStr(i)}" ${slotStr(i) === sel ? "selected" : ""}>${slotStr(i)}</option>`).join("");
+// ---- opening hours and start times: only offer start times that fit inside opening hours ----
+const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const slotOf = hhmm => { const [h, m] = hhmm.split(":").map(Number); return h * 4 + m / 15; };
+// [open, close] in 15-minute slots for a date (honours one-off date_overrides), or null when closed
+function hoursOn(loc, iso) {
+  const ov = loc.date_overrides || {};
+  const raw = iso in ov ? ov[iso] : loc.opening_hours[WEEKDAY_KEYS[(new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7]];
+  return raw ? [slotOf(raw[0]), slotOf(raw[1])] : null;
+}
+// The start times to offer: from opening time to the latest start that still ends by closing time.
+// `spans` = opening hours of the location(s) in question. A `current` value outside them is kept (and flagged) so the
+// screen never shows a time that differs from the one that will be used.
+function startOptions(spans, minutes, current) {
+  const need = Math.max(1, Math.ceil(minutes / 15)), ok = new Set();
+  for (const [open, close] of spans) for (let i = open; i + need <= close; i++) ok.add(i);
+  const cur = current ? slotOf(current) : null, outside = cur !== null && !ok.has(cur);
+  const all = [...ok]; if (outside) all.push(cur);
+  all.sort((a, b) => a - b);
+  const reason = ok.size ? "" : spans.length ? "This treatment is longer than the opening hours." : "Closed on this date.";
+  return { options: all.map(i => ({ value: slotStr(i), label: slotStr(i) + (outside && i === cur ? " (outside opening hours)" : "") })),
+           outside, reason, first: ok.size ? slotStr(Math.min(...ok)) : null };
+}
+const startSelectHtml = (r, sel, attrs) => `<select ${attrs}>${r.options.map(o => `<option value="${o.value}" ${o.value === sel ? "selected" : ""}>${o.label}</option>`).join("")}</select>`;
 const byId = (list, id) => list.find(x => x.id === id);
 const totalMin = t => t.numbing_minutes + t.doctor_minutes + t.staff_minutes;
 // "15 min numbing (1 staff) → 30 min doctor treatment (doctor + 1 staff) → 15 min staff treatment (1 staff)"
@@ -487,8 +510,9 @@ const minOpts = sel => MINUTES.map(m => `<option value="${m}" ${m === +sel ? "se
 const roomsHere = () => S.tt?.rooms || [];
 const fitRoom = presetId => { const t = byId(S.clinic.treatments, presetId), rooms = roomsHere();
   return (t && rooms.find(r => t.required_equipment.every(e => r.equipment.includes(e))))?.id || rooms[0]?.id || null; };
+const openingStart = () => { const l = byId(locs(), S.location), h = l && hoursOn(l, S.date); return h ? slotStr(h[0]) : "10:00"; };
 const newItem = from => ({ preset: from?.preset || "", name: from?.preset ? from.name : "", numbing: from?.numbing ?? 15, doctor: from?.doctor ?? 30,
-  staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", staffIds: {}, start: from?.start || "10:00", client: "",
+  staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", staffIds: {}, start: from?.start || openingStart(), client: "",
   status: "pending", booking: null, reasons: [], preview: null, note: "", touched: false });
 const resetItem = it => { if (it.status === "failed") it.status = "pending"; it.reasons = []; it.preview = null; it.note = ""; S.list.summary = ""; };
 function applyPreset(it, id) {   // optional template: fills the name and the three times, picks a room with its equipment
@@ -496,12 +520,17 @@ function applyPreset(it, id) {   // optional template: fills the name and the th
   const t = byId(S.clinic.treatments, id); if (!t) return;
   it.name = t.name; it.numbing = t.numbing_minutes; it.doctor = t.doctor_minutes; it.staff = t.staff_minutes; it.room = fitRoom(id);
 }
+const startSpans = () => { const l = byId(locs(), S.location), h = l && hoursOn(l, S.date); return h ? [h] : []; };
 function fixItem(it) {   // keep a row consistent with where we are and with the one rule
   if (!roomsHere().some(r => r.id === it.room)) {
     const had = !!it.room; it.room = fitRoom(it.preset);
     if (had) it.note = "The room it had isn't at this location (or no longer exists): check the room.";
   }
   if (+it.doctor === 0) it.numbing = 0;
+  if (!it.touched) {   // a row nobody has edited follows the opening hours (another day or location, a longer treatment)
+    const r = startOptions(startSpans(), +it.numbing + +it.doctor + +it.staff, it.start);
+    if (r.outside && r.first) it.start = r.first;
+  }
   const here = new Set((S.tt?.staff || []).filter(r => r.here).map(r => r.id)), on = new Set(activeSteps(it));
   for (const k of Object.keys(it.staffIds)) {   // a named staff member must be ticked in here, and the step must exist
     if (!on.has(k)) delete it.staffIds[k];
@@ -531,13 +560,13 @@ function drawBookingPanel() {
       return `<div class="bk-row ok" data-i="${i}"><span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
         <button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button>
         <div class="muted">${away ? `${esc(b.location)} · ${b.date}<br>` : ""}${bookedDetail(b)}</div></div>`; }
-    const p = it.preview, total = +it.numbing + +it.doctor + +it.staff;
+    const p = it.preview, total = +it.numbing + +it.doctor + +it.staff, sr = startOptions(startSpans(), total, it.start);
     const preview = !p ? "" : p.status === "booked" ? `<span class="pill yes">can be done</span><div class="muted">${detail(p.booking)}</div>`
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
       : `<span class="muted">not attempted</span>`;
     return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
       <div class="bk-edit"><span class="n">${i + 1}.</span><input data-f="name" placeholder="treatment name (optional)" value="${esc(it.name)}">
-        <label title="Proposed start time">Start<select data-f="start">${timeOptions(it.start, 95)}</select></label></div>
+        <label title="Proposed start time: only times inside the opening hours at which the treatment still ends by closing time">Start${startSelectHtml(sr, it.start, 'data-f="start"')}</label></div>
       ${presets.length ? `<div class="bk-edit"><select data-f="preset" title="Optional: fills in the name and the three times. Its doctor skills and room equipment are then enforced."><option value="">Template (optional): custom treatment</option>${presets.map(x => `<option value="${x.id}" ${x.id === it.preset ? "selected" : ""}>${esc(x.name)} (${totalMin(x)} min)</option>`).join("")}</select></div>` : ""}
       <div class="bk-mins">
         <label title="Numbing: 1 staff. Must be 0 when the doctor treatment is 0.">Numbing (min)<select data-f="numbing" ${+it.doctor === 0 ? "disabled" : ""}>${minOpts(it.numbing)}</select></label>
@@ -548,6 +577,7 @@ function drawBookingPanel() {
       ${activeSteps(it).length ? `<div class="bk-mins" style="grid-template-columns: repeat(${activeSteps(it).length}, 1fr)">${activeSteps(it).map(k => `
         <label title="Who does this step. “assign later” leaves it open: it still counts as one staff member needed (see Total staff).">${{numbing: "Numbing", doctor: "Doctor-step", staff: "Staff-step"}[k]} staff<select data-f="staff:${k}"><option value="">assign later</option>${hereStaff.map(r => `<option value="${r.id}" ${r.id === it.staffIds[k] ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>`).join("")}</div>` : ""}
       <div class="bk-edit"><input data-f="client" placeholder="client (optional)" value="${esc(it.client)}"><button class="link" data-rm="${i}">remove</button></div>
+      ${sr.reason || sr.outside ? `<div style="color:var(--bad);font-size:12px">${esc(sr.reason || "This start time is outside the opening hours (or the treatment would end after closing).")}</div>` : ""}
       <div class="muted">${total ? `Total ${total} min, ${it.start}–${endOf(it)}` : "Set at least one time above 0"}${+it.doctor === 0 ? " · staff alone, no doctor" : ""}${it.preset ? " · template skills/equipment apply" : ""}</div>
       ${it.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${it.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
       ${it.note ? `<div class="muted">${esc(it.note)}</div>` : ""}${preview}</div>`;
@@ -741,6 +771,9 @@ async function viewAvailability() {
     $("#main").innerHTML = `<div class="card">The availability check works on <b>treatment templates</b>, and none are defined yet (<code>treatments</code> in planning.json, with doctor skills). You don't need any to book: add treatments directly on the <b>Timetable</b> tab by giving the numbing, doctor and staff times and the room.</div>`;
     return;
   }
+  const aSpans = (A.location ? [byId(locs(), A.location)] : locs()).map(l => hoursOn(l, S.date)).filter(Boolean);
+  let aStart = startOptions(aSpans, treatment ? totalMin(treatment) : 15, A.start);
+  if (aStart.outside && aStart.first && !A.startTouched) { A.start = aStart.first; aStart = startOptions(aSpans, treatment ? totalMin(treatment) : 15, A.start); }
   $("#main").innerHTML = `
     <div class="card">
       <h3>Check one treatment</h3>
@@ -748,16 +781,16 @@ async function viewAvailability() {
       <div class="row">
         <label>Treatment <select id="a-tr">${tr.map(t => `<option value="${t.id}" ${t.id === A.treatment ? "selected" : ""}>${esc(t.name)} (${totalMin(t)} min)</option>`).join("")}</select></label>
         <label>Location <select id="a-loc"><option value="">All locations</option>${locs().map(l => `<option value="${l.id}" ${l.id === A.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
-        <label>Start time <select id="a-start">${timeOptions(A.start, 95)}</select></label>
+        <label>Start time ${startSelectHtml(aStart, A.start, 'id="a-start"')}</label>
         <button class="btn" id="a-check">Check availability</button>
         <button class="btn secondary" id="a-slots">Find open slots on ${esc(S.date)}</button>
       </div>
-      <div class="muted">${treatment ? `${esc(describeSteps(treatment))}; one room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"} for the whole treatment. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header).</div>
+      <div class="muted">${treatment ? `${esc(describeSteps(treatment))}; one room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"} for the whole treatment. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header). ${aStart.reason ? `<span style="color:var(--bad)">${esc(aStart.reason)}</span>` : "Start times shown fit inside the opening hours."}</div>
     </div>
     <div id="a-out"></div>`;
   $("#a-tr").onchange = e => { A.treatment = e.target.value; A.results = A.slots = null; viewAvailability(); };
   $("#a-loc").onchange = e => { A.location = e.target.value; A.results = A.slots = null; viewAvailability(); };
-  $("#a-start").onchange = e => { A.start = e.target.value; A.results = null; };
+  $("#a-start").onchange = e => { A.start = e.target.value; A.startTouched = true; A.results = null; };
   $("#a-check").onclick = () => guard(checkAvail);
   $("#a-slots").onclick = () => guard(findSlots);
   drawAvailResults();

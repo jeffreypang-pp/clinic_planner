@@ -156,6 +156,10 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   **Save list… / Load / delete** keep named lists of the treatments in the panel (times, rooms, names, clients; not the bookings)
   in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); a list belongs to a
   location, and loading one switches to that location and replaces the list in the panel (bookings already made stay).
+  The **Start** choices only offer times inside the location's opening hours for the selected date (one-off `date_overrides`
+  included) at which the treatment still ends by closing time; a new row starts at opening time, and a start you picked that
+  no longer fits (longer treatment, another day or location) is kept but flagged "outside opening hours". The Availability
+  check's start picker follows the same rule (the union of the opening hours when it covers all locations).
   Each row also has a **staff** pick for every step that needs one: *assign later* (default) or a named person (only people ticked in here).
   Under the staff rows, **Total staff** shows how many staff the treatments need in each 15-minute block (grey = none,
   amber = every available staff member in use, red = a shortage). Name or change who does a step afterwards with the dropdown on a
