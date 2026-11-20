@@ -169,6 +169,8 @@ class Clinic:
         self.staff: dict[str, Staff] = {}
         self.shifts: dict[str, Shift] = {}
         self.bookings: dict[str, Booking] = {}
+        # (room_id, date) -> slots in which the room is unavailable (maintenance etc.)
+        self.room_blocks: dict[tuple[str, Date], set[int]] = {}
 
     # ---- lookups ---------------------------------------------------------
     @staticmethod
@@ -226,6 +228,58 @@ class Clinic:
         self._get(self.shifts, shift_id, "shift")
         del self.shifts[shift_id]
 
+    # ---- editing availability (paint a time range on/off) ---------------
+    def set_person_availability(self, role: str, person_id: str, location_id: str, day,
+                                start: int, end: int, available: bool) -> None:
+        """Make a doctor/staff member available (or not) at a location for ``[start, end)``.
+
+        ``available=True`` puts them at ``location_id`` for that span, replacing wherever
+        else they were rostered in it (they can't be in two places).  ``available=False``
+        removes only their availability *at that location* in the span.  Shifts are
+        re-derived and merged.  Bookings are never touched: any that no longer fit show
+        up in ``issues()``.
+        """
+        day = parse_date(day)
+        person = self._get(self._people(role), person_id, role)
+        self._get(self.locations, location_id, "location")
+        _check_span(start, end, f"Availability for {person.name}")
+        mine = [s for s in self.shifts.values()
+                if s.role == role and s.person_id == person_id and s.date == day]
+        where: dict[int, str] = {}
+        for s in mine:
+            for i in range(s.start, s.end):
+                where[i] = s.location_id
+        for i in range(start, end):
+            if available:
+                where[i] = location_id
+            elif where.get(i) == location_id:
+                del where[i]
+        runs: list[list] = []
+        for i in sorted(where):
+            if runs and runs[-1][0] == where[i] and runs[-1][2] == i:
+                runs[-1][2] = i + 1
+            else:
+                runs.append([where[i], i, i + 1])
+        old_ids = {(s.location_id, s.start, s.end): s.id for s in mine}
+        for s in mine:
+            del self.shifts[s.id]
+        for loc, a, b in runs:
+            sid = old_ids.get((loc, a, b)) or _new_id("sh")
+            self.shifts[sid] = Shift(sid, role, person_id, loc, day, a, b)
+
+    def set_room_availability(self, room_id: str, day, start: int, end: int, available: bool) -> None:
+        """Block (``available=False``) or unblock a room for ``[start, end)`` on a date."""
+        day = parse_date(day)
+        room = self._get(self.rooms, room_id, "room")
+        _check_span(start, end, f"Availability for {room.name}")
+        blocked = self.room_blocks.setdefault((room_id, day), set())
+        if available:
+            blocked.difference_update(range(start, end))
+        else:
+            blocked.update(range(start, end))
+        if not blocked:
+            del self.room_blocks[(room_id, day)]
+
     # ---- availability ----------------------------------------------------
     def _person_status(self, role: str, pid: str, loc_id: str, day: Date, start: int, end: int,
                        ignore: str | None = None) -> str:
@@ -243,6 +297,9 @@ class Clinic:
             if uses and _overlap(start, end, b.start, self._end(b)):
                 return "busy"
         return "free"
+
+    def _room_blocked(self, room_id: str, day: Date, start: int, end: int) -> bool:
+        return bool(self.room_blocks.get((room_id, day), set()) & set(range(start, end)))
 
     def _room_busy(self, room_id: str, day: Date, start: int, end: int, ignore: str | None) -> bool:
         return any(b.id != ignore and b.room_id == room_id
@@ -301,12 +358,14 @@ class Clinic:
         # rooms
         fitting = [r for r in self.rooms.values()
                    if r.location_id == location_id and t.required_equipment <= r.equipment]
-        free_rooms = [r for r in fitting if not self._room_busy(r.id, day, start, end, ignore_booking)]
+        free_rooms = [r for r in fitting
+                      if not self._room_busy(r.id, day, start, end, ignore_booking)
+                      and not self._room_blocked(r.id, day, start, end)]
         if not fitting:
             need = ", ".join(sorted(t.required_equipment)) or "any equipment"
             reasons.append(f"{loc.name} has no treatment room with the required equipment ({need})")
         elif not free_rooms:
-            reasons.append(f"Every suitable room at {loc.name} is booked for {span}")
+            reasons.append(f"Every suitable room at {loc.name} is booked or unavailable for {span}")
 
         return self._availability_result(t, loc, day, start, end, free_docs, free_staff, free_rooms, reasons)
 
@@ -377,7 +436,8 @@ class Clinic:
         """Per-slot state of every doctor, staff member and room at one location.
 
         Cell values: ``free`` | ``off`` (not rostered anywhere) | ``closed``
-        (room, location closed) | ``away:<location_id>`` (working/booked at
+        (room, location closed) | ``blocked`` (room manually made unavailable) |
+        ``away:<location_id>`` (working/booked at
         another location) | ``booked:<booking_id>``.
         """
         day = parse_date(day)
@@ -400,7 +460,9 @@ class Clinic:
             return cells
 
         def room_cells(room):
-            cells = ["free" if hours and hours[0] <= i < hours[1] else "closed"
+            blocked = self.room_blocks.get((room.id, day), set())
+            cells = ["closed" if not (hours and hours[0] <= i < hours[1])
+                     else "blocked" if i in blocked else "free"
                      for i in range(SLOTS_PER_DAY)]
             for b in todays:
                 if b.room_id == room.id:
@@ -497,11 +559,26 @@ class Clinic:
                         "location_id": s.location_id, "date": s.date.isoformat(),
                         "start": format_slot(s.start), "end": format_slot(s.end)}
                        for s in sorted(self.shifts.values(), key=lambda s: (s.date, s.location_id, s.start))],
+            "room_blocks": self._room_blocks_json(),
             "bookings": [{"id": b.id, "treatment_id": b.treatment_id, "location_id": b.location_id,
                           "room_id": b.room_id, "doctor_id": b.doctor_id, "staff_ids": b.staff_ids,
                           "date": b.date.isoformat(), "start": format_slot(b.start), "client": b.client}
                          for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start))],
         }
+
+    def _room_blocks_json(self) -> list[dict]:
+        out = []
+        for (rid, day), slots in sorted(self.room_blocks.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+            run_start = prev = None
+            for i in sorted(slots) + [None]:
+                if run_start is not None and i != prev + 1:
+                    out.append({"room_id": rid, "date": day.isoformat(),
+                                "start": format_slot(run_start), "end": format_slot(prev + 1)})
+                    run_start = None
+                if i is not None and run_start is None:
+                    run_start = i
+                prev = i
+        return out
 
     @classmethod
     def from_dict(cls, data: dict) -> "Clinic":
@@ -578,6 +655,11 @@ class Clinic:
             c.add_shift(need(s, "role", "shift"), need(s, "person_id", "shift"),
                         need(s, "location_id", "shift"), need(s, "date", "shift"),
                         parse_time(need(s, "start", "shift")), parse_time(need(s, "end", "shift")), sid)
+
+        for blk in data.get("room_blocks", []):
+            c.set_room_availability(need(blk, "room_id", "room block"), need(blk, "date", "room block"),
+                                    parse_time(need(blk, "start", "room block")),
+                                    parse_time(need(blk, "end", "room block")), False)
 
         for b in data.get("bookings", []):
             bid = b.get("id") or _new_id("bk")

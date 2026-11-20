@@ -9,7 +9,7 @@
     --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6a7385; --line: #dfe3ea;
     --accent: #2f6fed; --accent-text: #fff;
     --free: #cfeedd; --free-line: #a7dcc0; --off: #eceef2; --closed: #d9dce3;
-    --away: #fde7b8; --away-text: #7a5300; --booked: #2f6fed; --booked-text: #fff;
+    --away: #fde7b8; --away-text: #7a5300; --blocked: #f3b8b2; --booked: #2f6fed; --booked-text: #fff;
     --bad: #b3261e; --bad-bg: #fde8e6; --ok: #1b7a43; --ok-bg: #e3f5ea; --warn-bg: #fff4d6;
   }
   @media (prefers-color-scheme: dark) {
@@ -17,7 +17,7 @@
       --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #98a1b3; --line: #30363f;
       --accent: #5b8cff; --accent-text: #0b1020;
       --free: #1f4a35; --free-line: #2a6a4b; --off: #232830; --closed: #2c313a;
-      --away: #5a4515; --away-text: #f7dca0; --booked: #4a7bf0; --booked-text: #fff;
+      --away: #5a4515; --away-text: #f7dca0; --blocked: #7a3430; --booked: #4a7bf0; --booked-text: #fff;
       --bad: #ff8a80; --bad-bg: #3b1e1c; --ok: #6fd69a; --ok-bg: #173526; --warn-bg: #3a3014;
     }
   }
@@ -64,6 +64,13 @@
   .cell.free:hover { outline: 2px solid var(--accent); }
   .cell.off { background: var(--off); }
   .cell.closed { background: repeating-linear-gradient(45deg, var(--closed), var(--closed) 3px, var(--off) 3px, var(--off) 6px); }
+  .cell.blocked { background: repeating-linear-gradient(135deg, var(--blocked), var(--blocked) 3px, transparent 3px, transparent 6px); border: 1px solid var(--blocked); }
+  .tt-row { position: relative; }
+  .tt.edit .tt-row[data-kind] { cursor: crosshair; touch-action: none; user-select: none; }
+  .tt.edit .cell.free:hover { outline: none; }
+  .sel { position: absolute; top: -1px; bottom: -1px; z-index: 3; pointer-events: none; border: 2px solid var(--accent);
+         background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 4px; }
+  #editbar b { font-size: 15px; }
   .cell.away { background: var(--away); color: var(--away-text); text-align: center; line-height: 26px; font-weight: 600; }
   .cell.booked { background: var(--booked); color: var(--booked-text); padding: 0 4px; line-height: 26px; cursor: default; }
   .tt h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
@@ -101,7 +108,7 @@
 <script>
 const TABS = [["timetable", "Timetable"], ["availability", "Availability & booking"],
               ["shifts", "Roster (shifts)"], ["setup", "Setup & save"]];
-const S = { clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
+const S = { editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
             shiftForm: { role: "doctor", from: null, to: null, days: [0,1,2,3,4,5,6] } };
 
@@ -158,6 +165,7 @@ async function render() {
 
 // ---------- timetable ----------
 async function viewTimetable() {
+  S.sel = null;
   S.tt = await api("GET", `/api/timetable?location=${S.location}&date=${S.date}`);
   const t = S.tt, [lo, hi] = t.view, n = hi - lo;
   const cols = `grid-template-columns: 150px repeat(${n}, 19px)`;
@@ -167,7 +175,7 @@ async function viewTimetable() {
   const locName = id => byId(locs(), id)?.name || id;
 
   function rowHtml(r, sub, role) {
-    let html = `<div class="tt-row" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
     for (let i = lo; i < hi; ) {
       const c = r.cells[i];
       if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
@@ -178,9 +186,9 @@ async function viewTimetable() {
         i = j; continue;
       }
       const time = slotStr(i);
-      if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free (click to check availability)"></div>`;
+      if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free${S.editAvail ? "" : " (click to check availability)"}"></div>`;
       else if (c.startsWith("away:")) html += `<div class="cell away" title="${time} — at ${esc(locName(c.slice(5)))}">${esc(locName(c.slice(5))[0])}</div>`;
-      else html += `<div class="cell ${c}" title="${time} — ${c === "off" ? "not rostered" : "closed"}"></div>`;
+      else html += `<div class="cell ${c}" title="${time} — ${{off: "not rostered", closed: "closed", blocked: "room unavailable (blocked)"}[c]}"></div>`;
       i++;
     }
     return html + "</div>";
@@ -191,24 +199,86 @@ async function viewTimetable() {
   $("#main").innerHTML = `
     <div class="row">
       <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
+      <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
       <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
     </div>
     <div class="legend">
       <span style="--c:var(--free)">free</span><span style="--c:var(--booked)">booked</span>
       <span style="--c:var(--away)">at another location (initial shown)</span>
-      <span style="--c:var(--off)">not rostered</span><span style="--c:var(--closed)">closed</span>
+      <span style="--c:var(--off)">not rostered</span><span style="--c:var(--closed)">closed</span><span style="--c:var(--blocked)">room blocked</span>
       <span>each cell = 15 min</span>
     </div>
     <div class="card tt">${header}
       ${section("Doctors", people(t.doctors), r => r.here ? "" : "(not here)", "doctor")}
       ${section("Staff", people(t.staff), r => r.here ? "" : "(not here)", "staff")}
       ${section("Treatment rooms", t.rooms, null, "room")}
-    </div>`;
+    </div>
+    <div id="editbar" class="card" ${S.editAvail ? "" : "hidden"}></div>`;
   $("#loc").onchange = e => { S.location = e.target.value; render(); };
+  $(".tt").classList.toggle("edit", S.editAvail);
+  $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
+  if (S.editAvail) setupEditing(lo, n);
   $(".tt").onclick = e => {
+    if (S.editAvail) return;
     const c = e.target.closest(".cell.free"); if (!c) return;
     S.avail.location = S.location; S.avail.start = c.dataset.start; S.avail.results = S.avail.slots = null;
     S.tab = "availability"; render();
+  };
+}
+
+// ---------- edit availability (drag on timetable rows) ----------
+function setupEditing(lo, n) {
+  const tt = $(".tt"), COL = 19, LABEL = 150;
+  const rowOf = () => tt.querySelector(`.tt-row[data-kind="${S.sel.kind}"][data-id="${S.sel.id}"]`);
+  const slotAt = (row, x) => lo + Math.max(0, Math.min(n - 1, Math.floor((x - row.getBoundingClientRect().left - LABEL) / COL)));
+  const range = () => [Math.min(S.sel.a, S.sel.b), Math.max(S.sel.a, S.sel.b)];
+  function drawSel() {
+    tt.querySelectorAll(".sel").forEach(el => el.remove());
+    if (!S.sel) return;
+    const [a, b] = range(), el = document.createElement("div");
+    el.className = "sel"; el.style.left = (LABEL + (a - lo) * COL) + "px"; el.style.width = ((b - a + 1) * COL - 1) + "px";
+    rowOf().appendChild(el);
+  }
+  tt.onpointerdown = e => {
+    const row = e.target.closest(".tt-row[data-kind]");
+    if (!row || e.clientX - row.getBoundingClientRect().left < LABEL) return;
+    e.preventDefault();
+    const a = slotAt(row, e.clientX);
+    S.sel = { kind: row.dataset.kind, id: row.dataset.id, a, b: a, dragging: true };
+    drawSel(); renderEditBar();
+  };
+  window.onpointermove = e => { if (S.sel?.dragging) { S.sel.b = slotAt(rowOf(), e.clientX); drawSel(); } };
+  window.onpointerup = () => { if (S.sel?.dragging) { S.sel.dragging = false; renderEditBar(); } };
+  renderEditBar();
+}
+function renderEditBar() {
+  const bar = $("#editbar"), sel = S.sel, t = S.tt;
+  if (!sel) { bar.innerHTML = `<b>Edit availability</b><div class="muted">Drag across a doctor, staff or room row to select a time range (each cell = 15 min), then choose what to do. Nothing changes until you press a button.</div>`; return; }
+  const [a, b] = [Math.min(sel.a, sel.b), Math.max(sel.a, sel.b)], start = slotStr(a), end = slotStr(b + 1);
+  const list = t[{doctor: "doctors", staff: "staff", room: "rooms"}[sel.kind]], name = list.find(r => r.id === sel.id).name;
+  const room = sel.kind === "room";
+  bar.innerHTML = `<b>${esc(name)}</b> · ${start}–${end} on ${esc(S.date)} at ${esc(t.location)}
+    <div class="row" style="margin:10px 0 0">
+      ${room ? `<button class="btn danger" data-act="false">Block room (unavailable)</button>
+                <button class="btn" data-act="true">Unblock (available)</button>`
+             : `<button class="btn" data-act="true">Available at ${esc(t.location)}</button>
+                <button class="btn danger" data-act="false">Not available at ${esc(t.location)}</button>`}
+      <label>Repeat weekly until (optional) <input type="date" id="rep" min="${S.date}"></label>
+      <button class="btn secondary" data-cancel="1">Clear selection</button>
+    </div>
+    <div class="muted" style="margin-top:8px">${room
+      ? "Blocked rooms can't be booked (e.g. maintenance). Existing bookings are kept but flagged."
+      : `“Available” puts them here for this span, replacing wherever else they were rostered in it. “Not available” only removes their availability at ${esc(t.location)}. Existing bookings are kept but flagged.`}
+      Repeat applies to the same weekday each week.</div>`;
+  bar.onclick = e => {
+    if (e.target.dataset.cancel) { S.sel = null; $("#main").querySelectorAll(".sel").forEach(x => x.remove()); renderEditBar(); return; }
+    const act = e.target.dataset.act; if (act === undefined) return;
+    guard(async () => {
+      const r = await api("PUT", "/api/availability", { kind: sel.kind, id: sel.id, location_id: t.location_id, date: S.date,
+        start, end, available: act === "true", repeat_until: $("#rep").value || undefined });
+      await loadClinic(); await viewTimetable();
+      if (!S.issues.length) banner("ok", `Saved ${esc(name)} ${start}–${end}${r.days > 1 ? ` for ${r.days} weeks` : ""}.`, 3000);
+    });
   };
 }
 

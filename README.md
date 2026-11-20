@@ -22,6 +22,7 @@ is written back to it. If the file doesn't exist, a sample clinic (3 locations, 
 | Doctor | Has a set of treatments they can perform. Needed for the whole treatment. |
 | Staff | Interchangeable: any free, rostered staff member can assist any treatment. |
 | Shift | A person at **one location** for a span on a date. Shuffling = back-to-back shifts at different sites. Shifts of one person can't overlap. |
+| Room block | Time span on a date when a room can't be used (`room_blocks` in the JSON). |
 | Booking | Treatment + location + date + start; uses 1 doctor, N staff, 1 room for its full duration. |
 
 A treatment can start at a slot at a location iff, for the **whole** duration:
@@ -35,7 +36,10 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 ## UI tabs
 
 * **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min
-  (free, booked, away at another location, not rostered, closed). Click a free cell to check availability from that time.
+  (free, booked, away at another location, not rostered, closed, room blocked). Click a free cell to check availability from that time.
+  **Edit availability**: drag across a row, then *Available here* / *Not available here* for a doctor or staff member
+  (their shifts are split/merged automatically; "available here" moves them from another location for that span),
+  or *Block* / *Unblock* for a room (maintenance etc.). Optionally repeat weekly until a date.
 * **Availability & booking** - choose treatment / location (or all) / start time; see who and what is free
   or why not; "find open slots" for the day; book with auto-assignment.
 * **Roster** - add/remove shifts (date ranges + weekdays), view and cancel bookings.
@@ -47,7 +51,8 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 `GET /api/clinic`, `PUT /api/clinic` (replace whole clinic, validated first),
 `GET /api/timetable?location=&date=`, `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`,
 `GET /api/slots?treatment=&date=[&location=]`, `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`,
-`GET|POST /api/shifts`, `DELETE /api/shifts/<id>`, `PUT /api/locations/<id>/hours`.
+`GET|POST /api/shifts`, `DELETE /api/shifts/<id>`, `PUT /api/availability` (paint a doctor/staff/room range on or off, optional weekly repeat),
+`PUT /api/locations/<id>/hours`.
 
 ## Not modelled yet
 

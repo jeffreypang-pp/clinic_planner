@@ -12,6 +12,7 @@ import json
 import os
 import re
 import threading
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -107,6 +108,34 @@ class App:
         self.persist()
         return {"ok": True, "issues": self.clinic.issues()}
 
+    def put_availability(self, q, body):
+        """Paint a time range available/unavailable for a doctor, staff member or room.
+
+        Body: kind (doctor|staff|room), id, date, start, end, available (bool),
+        location_id (doctor/staff only), repeat_until (optional date: repeat every 7 days).
+        """
+        kind, ident = _need(body, "kind"), _need(body, "id")
+        if kind not in ("doctor", "staff", "room"):
+            raise ClinicError(f"Unknown kind {kind!r}; expected doctor, staff or room")
+        if not isinstance(body.get("available"), bool):
+            raise ClinicError("Field 'available' must be true or false")
+        day = parse_date(_need(body, "date"))
+        start, end = parse_time(_need(body, "start")), parse_time(_need(body, "end"))
+        until = parse_date(body["repeat_until"]) if body.get("repeat_until") else day
+        if until < day:
+            raise ClinicError("repeat_until is before date")
+        if (until - day).days > 730:
+            raise ClinicError("Can repeat for at most 2 years")
+        dates = [day + timedelta(days=7 * i) for i in range((until - day).days // 7 + 1)]
+        for d in dates:
+            if kind == "room":
+                self.clinic.set_room_availability(ident, d, start, end, body["available"])
+            else:
+                self.clinic.set_person_availability(kind, ident, _need(body, "location_id"), d,
+                                                    start, end, body["available"])
+        self.persist()
+        return {"days": len(dates), "issues": self.clinic.issues()}
+
     def put_hours(self, q, body, lid):
         hours = {}
         for wd, span in _need(body, "hours").items():
@@ -143,6 +172,7 @@ ROUTES = [
     ("GET", r"/api/shifts", "get_shifts"),
     ("POST", r"/api/shifts", "post_shifts"),
     ("DELETE", r"/api/shifts/([\w-]+)", "delete_shift"),
+    ("PUT", r"/api/availability", "put_availability"),
     ("PUT", r"/api/locations/([\w-]+)/hours", "put_hours"),
 ]
 

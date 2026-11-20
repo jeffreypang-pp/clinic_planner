@@ -260,6 +260,97 @@ class PersistenceTests(unittest.TestCase):
             Clinic.from_dict(bad)
 
 
+class EditAvailabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.c = small_clinic()
+
+    def spans(self, role="doctor", pid="d1", day=MON):
+        return sorted((s.location_id, format_slot(s.start), format_slot(s.end))
+                      for s in self.c.shifts.values()
+                      if s.role == role and s.person_id == pid and s.date == day)
+
+    def paint(self, loc, start, end, available=True, role="doctor", pid="d1"):
+        self.c.set_person_availability(role, pid, loc, MON, parse_time(start), parse_time(end), available)
+
+    def test_paint_available_and_merge(self):
+        self.paint("a", "09:00", "11:00")
+        self.paint("a", "11:00", "12:00")   # adjacent -> merged into one shift
+        self.paint("a", "10:00", "10:30")   # already covered -> no change
+        self.assertEqual(self.spans(), [("a", "09:00", "12:00")])
+
+    def test_clear_splits_shift(self):
+        self.paint("a", "09:00", "17:00")
+        self.paint("a", "12:00", "13:00", available=False)
+        self.assertEqual(self.spans(), [("a", "09:00", "12:00"), ("a", "13:00", "17:00")])
+        self.paint("a", "09:00", "17:00", available=False)
+        self.assertEqual(self.spans(), [])
+
+    def test_painting_here_moves_person_from_other_location(self):
+        self.paint("a", "09:00", "17:00")
+        self.paint("b", "13:00", "15:00")   # shuffle: replaces A for that span
+        self.assertEqual(self.spans(), [("a", "09:00", "13:00"), ("a", "15:00", "17:00"), ("b", "13:00", "15:00")])
+
+    def test_clearing_at_a_location_leaves_other_location(self):
+        self.paint("a", "09:00", "12:00")
+        self.paint("b", "12:00", "17:00")
+        self.paint("a", "09:00", "17:00", available=False)  # only removes A
+        self.assertEqual(self.spans(), [("b", "12:00", "17:00")])
+
+    def test_untouched_shift_keeps_id_and_other_people_unchanged(self):
+        sh = self.c.add_shift("doctor", "d1", "a", MON, parse_time("09:00"), parse_time("10:00"))
+        other = self.c.add_shift("doctor", "d2", "a", MON, parse_time("09:00"), parse_time("10:00"))
+        self.paint("b", "12:00", "13:00")
+        self.assertIn(sh.id, self.c.shifts)
+        self.assertIn(other.id, self.c.shifts)
+
+    def test_staff_and_validation(self):
+        self.paint("a", "09:00", "10:00", role="staff", pid="s1")
+        self.assertEqual(self.spans("staff", "s1"), [("a", "09:00", "10:00")])
+        with self.assertRaises(ClinicError):
+            self.paint("a", "10:00", "09:00")
+        with self.assertRaises(NotFound):
+            self.paint("nowhere", "09:00", "10:00")
+
+    def test_painting_unavailable_flags_existing_booking(self):
+        self.paint("a", "09:00", "17:00")
+        self.paint("a", "09:00", "17:00", role="staff", pid="s1")
+        self.c.book("laser", "a", MON, parse_time("10:00"))
+        self.assertEqual(self.c.issues(), [])
+        self.paint("a", "10:00", "10:15", available=False)
+        self.assertTrue(self.c.bookings)  # booking kept
+        self.assertTrue(any("D1" in i for i in self.c.issues()))
+
+    def test_room_block_makes_room_unavailable(self):
+        roster(self.c, "doctor", "d1", "a", "09:00", "17:00")
+        roster(self.c, "staff", "s1", "a", "09:00", "17:00")
+        ok = lambda t: self.c.check_availability("laser", "a", MON, parse_time(t))
+        self.assertTrue(ok("10:00")["available"])
+        self.c.set_room_availability("a_laser", MON, parse_time("10:30"), parse_time("12:00"), False)
+        self.assertFalse(ok("10:00")["available"])   # 10:00-11:00 overlaps the block
+        self.assertTrue(ok("09:00")["available"])    # ends exactly when block starts
+        self.assertFalse(ok("11:30")["available"])
+        self.assertTrue(ok("12:00")["available"])
+        cells = next(r for r in self.c.timetable("a", MON)["rooms"] if r["id"] == "a_laser")["cells"]
+        self.assertEqual(cells[parse_time("10:15")], "free")
+        self.assertEqual(cells[parse_time("10:30")], "blocked")
+        self.assertEqual(cells[parse_time("12:00")], "free")
+        self.c.set_room_availability("a_laser", MON, parse_time("10:00"), parse_time("13:00"), True)
+        self.assertTrue(ok("10:00")["available"])
+        self.assertEqual(self.c.room_blocks, {})
+
+    def test_blocking_room_flags_existing_booking_and_roundtrips(self):
+        roster(self.c, "doctor", "d1", "a", "09:00", "17:00")
+        roster(self.c, "staff", "s1", "a", "09:00", "17:00")
+        self.c.book("laser", "a", MON, parse_time("10:00"))
+        self.c.set_room_availability("a_laser", MON, parse_time("09:00"), parse_time("10:00"), False)
+        self.c.set_room_availability("a_laser", MON, parse_time("10:30"), parse_time("11:00"), False)
+        self.assertTrue(any("Laser" in i for i in self.c.issues()))
+        data = self.c.to_dict()
+        self.assertEqual([(b["start"], b["end"]) for b in data["room_blocks"]],
+                         [("09:00", "10:00"), ("10:30", "11:00")])
+        self.assertEqual(Clinic.from_dict(data).to_dict(), data)
+
+
 class SampleTests(unittest.TestCase):
     def test_sample_is_consistent_and_bookable(self):
         c = build_sample(date(2026, 11, 20), days=28)
