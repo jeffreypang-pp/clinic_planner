@@ -11,11 +11,6 @@
           "equipment": ["body_machine"]
         },
         {
-          "id": "asia_square_staff_intensive_d",
-          "name": "STAFF_INTENSIVE_D",
-          "equipment": ["staff_intensive_d"]
-        },
-        {
           "id": "asia_square_clarity_room",
           "name": "CLARITY_ROOM",
           "equipment": ["clarity_room"]
