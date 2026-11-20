@@ -113,9 +113,18 @@ class App:
     def post_booking(self, q, body):
         b = self.clinic.book(_need(body, "treatment_id"), _need(body, "location_id"), _need(body, "date"),
                              parse_time(_need(body, "start")), body.get("client", ""),
-                             body.get("doctor_id") or None, body.get("room_id") or None,
-                             body.get("staff_ids"))
+                             body.get("doctor_id") or None, body.get("room_id") or None)
         return {"booking": self.clinic.describe_booking(b)}
+
+    def post_book_list(self, q, body):
+        """Go down a list of ``items`` ({treatment_id, start, client?}) in order, booking each at
+        ``location_id`` on ``date``; stops at the first one that can't be carried out.
+        ``dry_run`` reports what would happen without booking anything."""
+        items = _need(body, "items")
+        if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+            raise ClinicError("'items' must be a list of {treatment_id, start} objects")
+        return self.clinic.book_list(_need(body, "location_id"), _need(body, "date"), items,
+                                     bool(body.get("dry_run")))
 
     def post_clear_day(self, q, body):
         """Remove all bookings and blocks for a location on a date (``dry_run`` previews)."""
@@ -194,6 +203,7 @@ ROUTES = [
     ("GET", r"/api/slots", "get_slots"),
     ("GET", r"/api/bookings", "get_bookings"),
     ("POST", r"/api/bookings", "post_booking"),
+    ("POST", r"/api/book-list", "post_book_list"),
     ("POST", r"/api/clear-day", "post_clear_day"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/presence", "put_presence"),

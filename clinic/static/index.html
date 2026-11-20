@@ -122,7 +122,7 @@
 <script>
 const TABS = [["timetable", "Timetable"], ["availability", "Availability & booking"],
               ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
-const S = { editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
+const S = { list: { location: null, items: [], result: null }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
@@ -133,6 +133,13 @@ const slotStr = i => String(Math.floor(i / 4)).padStart(2, "0") + ":" + String((
 const timeOptions = (sel, max = 96) => Array.from({length: max + 1}, (_, i) =>
   `<option value="${slotStr(i)}" ${slotStr(i) === sel ? "selected" : ""}>${slotStr(i)}</option>`).join("");
 const byId = (list, id) => list.find(x => x.id === id);
+const totalMin = t => t.numbing_minutes + t.doctor_minutes + t.staff_minutes;
+// "15 min numbing (1 staff) → 30 min doctor treatment (doctor + 1 staff) → 15 min staff treatment (1 staff)"
+const describeSteps = t => t.doctor_minutes === 0
+  ? `${t.staff_minutes} min carried out by staff alone (1 staff)`
+  : [t.numbing_minutes && `${t.numbing_minutes} min numbing (1 staff)`, `${t.doctor_minutes} min doctor treatment (doctor + 1 staff)`,
+     t.staff_minutes && `${t.staff_minutes} min staff treatment (1 staff)`].filter(Boolean).join(" → ");
+const STEP_TAG = { numbing: " · numbing", doctor: "", staff: " · staff tx", all: "" };
 const locs = () => S.clinic.locations;
 
 async function api(method, path, body) {
@@ -243,9 +250,10 @@ async function viewTimetable() {
       const c = r.cells[i];
       if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
         let j = i; while (j < hi && r.cells[j] === c) j++;
-        const b = bookings[c.slice(7)];
-        const label = b ? `${b.treatment}${b.client ? " · " + b.client : ""}` : "";
-        html += `<div class="cell booked" style="grid-column: span ${j - i}" title="${esc(b ? `${b.start}-${b.end} ${b.treatment}\nDr: ${b.doctor}\nStaff: ${b.staff.join(", ") || "-"}\nRoom: ${b.room}\nClient: ${b.client || "-"}` : "")}">${esc(label)}</div>`;
+        const [, bid, step] = c.split(":");
+        const b = bookings[bid];
+        const label = b ? `${b.treatment}${STEP_TAG[step] || ""}${b.client ? " · " + b.client : ""}` : "";
+        html += `<div class="cell booked" style="grid-column: span ${j - i}" title="${esc(b ? `${b.treatment} ${b.start}-${b.end}  (room: ${b.room})\n` + b.steps.map(x => `${x.start}-${x.end} ${x.label}: ${[x.doctor, x.staff].filter(Boolean).join(" + ")}`).join("\n") + `\nClient: ${b.client || "-"}` : "")}">${esc(label)}</div>`;
         i = j; continue;
       }
       const time = slotStr(i);
@@ -286,7 +294,7 @@ async function viewTimetable() {
     const body = { location_id: S.location, date: S.date }, where = `${t.location} on ${S.date}`;
     const p = await api("POST", "/api/clear-day", { ...body, dry_run: true });
     if (!p.bookings && !p.blocks) { banner("ok", `Nothing to clear at ${esc(where)}: no bookings or blocked times.`, 4000); return; }
-    const lines = p.booking_details.slice(0, 8).map(b => `  • ${b.start} ${b.treatment}${b.client ? " (" + b.client + ")" : ""} – ${b.doctor}, ${b.room}`);
+    const lines = p.booking_details.slice(0, 8).map(b => `  • ${b.start} ${b.treatment}${b.client ? " (" + b.client + ")" : ""} – ${b.doctor || "staff only"}, ${b.room}`);
     if (p.booking_details.length > 8) lines.push(`  • …and ${p.booking_details.length - 8} more`);
     const msg = `Clear ${where}?\n\n` +
       `${p.bookings} booking${p.bookings === 1 ? "" : "s"} will be CANCELLED:\n${lines.join("\n") || "  (none)"}\n\n` +
@@ -377,15 +385,17 @@ async function viewAvailability() {
     return;
   }
   $("#main").innerHTML = `
+    <div class="card" id="list-card"></div>
     <div class="card">
+      <h3>Check one treatment</h3>
       <div class="row">
-        <label>Treatment <select id="a-tr">${tr.map(t => `<option value="${t.id}" ${t.id === A.treatment ? "selected" : ""}>${esc(t.name)} (${t.duration_minutes} min)</option>`).join("")}</select></label>
+        <label>Treatment <select id="a-tr">${tr.map(t => `<option value="${t.id}" ${t.id === A.treatment ? "selected" : ""}>${esc(t.name)} (${totalMin(t)} min)</option>`).join("")}</select></label>
         <label>Location <select id="a-loc"><option value="">All locations</option>${locs().map(l => `<option value="${l.id}" ${l.id === A.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
         <label>Start time <select id="a-start">${timeOptions(A.start, 95)}</select></label>
         <button class="btn" id="a-check">Check availability</button>
         <button class="btn secondary" id="a-slots">Find open slots on ${esc(S.date)}</button>
       </div>
-      <div class="muted">${treatment ? `Needs: 1 doctor (qualified), ${treatment.staff_required} staff, a room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"}. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header).</div>
+      <div class="muted">${treatment ? `${esc(describeSteps(treatment))}; one room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"} for the whole treatment. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header).</div>
     </div>
     <div id="a-out"></div>`;
   $("#a-tr").onchange = e => { A.treatment = e.target.value; A.results = A.slots = null; viewAvailability(); };
@@ -393,8 +403,72 @@ async function viewAvailability() {
   $("#a-start").onchange = e => { A.start = e.target.value; A.results = null; };
   $("#a-check").onclick = () => guard(checkAvail);
   $("#a-slots").onclick = () => guard(findSlots);
+  drawList();
   drawAvailResults();
   if (!A.results && !A.slots && A.location) guard(checkAvail);  // arrived by clicking a free cell
+}
+
+// ---------- booking list: go down the list in order, stop at the first treatment that can't be done ----------
+function drawList() {
+  const L = S.list, tr = S.clinic.treatments, card = $("#list-card");
+  if (!L.location || !byId(locs(), L.location)) L.location = locs()[0]?.id;
+  if (!L.items.length) L.items.push({ treatment: tr[0].id, start: "10:00", client: "" });
+  const opts = (list, sel, label) => list.map(x => `<option value="${x.id}" ${x.id === sel ? "selected" : ""}>${esc(label(x))}</option>`).join("");
+  card.innerHTML = `<h3>Booking list</h3>
+    <div class="muted" style="margin-bottom:8px">Goes down the list in order, giving each treatment its proposed start time (each one sees the doctor, staff and room already used by the ones above it).
+      The first treatment that can't be carried out for lack of a doctor, staff member or room is reported and the list <b>stops there</b>; treatments above it stay booked, the ones below are not attempted.</div>
+    <div class="row"><label>Location <select id="l-loc">${opts(locs(), L.location, l => l.name)}</select></label>
+      <div class="muted" style="align-self:center">on <b>${esc(S.date)}</b> (change in the header)</div></div>
+    <table><tr><th>#</th><th>Treatment</th><th>Proposed start</th><th>Client</th><th></th></tr>
+      ${L.items.map((it, i) => `<tr data-row="${i}"><td>${i + 1}</td>
+        <td><select data-f="treatment">${opts(tr, it.treatment, t => `${t.name} (${totalMin(t)} min)`)}</select></td>
+        <td><select data-f="start">${timeOptions(it.start, 95)}</select></td>
+        <td><input data-f="client" placeholder="optional" value="${esc(it.client)}"></td>
+        <td><button class="link" data-rm="${i}">remove</button></td></tr>`).join("")}</table>
+    <div class="row" style="margin:12px 0 0">
+      <button class="btn secondary" id="l-add">+ Add treatment</button>
+      <button class="btn secondary" id="l-check">Check list (books nothing)</button>
+      <button class="btn" id="l-book">Book list</button>
+      <button class="btn secondary" id="l-clear">Clear list</button></div>
+    <div id="l-out"></div>`;
+  if (L.result) $("#l-out").innerHTML = renderListResult(L.result);
+  const reset = () => { L.result = null; $("#l-out").innerHTML = ""; };
+  card.onchange = e => { const t = e.target;
+    if (t.id === "l-loc") { L.location = t.value; return reset(); }
+    const row = t.closest("[data-row]"); if (row && t.dataset.f) { L.items[+row.dataset.row][t.dataset.f] = t.value; reset(); } };
+  card.oninput = e => { const row = e.target.closest("[data-row]"); if (row && e.target.dataset.f === "client") L.items[+row.dataset.row].client = e.target.value; };
+  const run = dry => guard(async () => {
+    const r = await api("POST", "/api/book-list", { location_id: L.location, date: S.date, dry_run: dry,
+      items: L.items.map(i => ({ treatment_id: i.treatment, start: i.start, client: i.client })) });
+    L.result = r; if (!dry) await loadClinic();
+    $("#l-out").innerHTML = renderListResult(r);
+  });
+  card.onclick = e => { const t = e.target;
+    if (t.id === "l-add") { const last = L.items[L.items.length - 1]; L.items.push({ ...last, client: "" }); L.result = null; drawList(); }
+    else if (t.dataset.rm !== undefined) { L.items.splice(+t.dataset.rm, 1); L.result = null; drawList(); }
+    else if (t.id === "l-clear") { L.items = []; L.result = null; drawList(); }
+    else if (t.id === "l-check") run(true);
+    else if (t.id === "l-book") run(false); };
+}
+function renderListResult(r) {
+  const verb = r.dry_run ? "can be carried out" : "booked", n = r.total, failed = r.stopped_at;
+  const summary = failed === null
+    ? `<span class="pill yes">All ${n} ${verb}</span>${r.dry_run ? "" : " Press <b>Save…</b> (top bar) to write them to disk."}`
+    : `<span class="pill no">${r.booked} of ${n} ${verb}</span> Stopped at <b>#${failed + 1}</b> (${esc(r.results[failed].treatment || r.results[failed].treatment_id || "?")}): it cannot be performed.` +
+      (n - failed - 1 ? ` The ${n - failed - 1} after it ${n - failed - 1 === 1 ? "was" : "were"} not attempted.` : "") +
+      (r.dry_run || !r.booked ? "" : " The ones above it are booked. Press <b>Save…</b> to write them to disk.");
+  const rows = r.results.map(x => {
+    const pill = { booked: `<span class="pill yes">${r.dry_run ? "can be done" : "booked"}</span>`,
+                   failed: `<span class="pill no">cannot be performed</span>`,
+                   not_attempted: `<span class="muted">not attempted</span>` }[x.status];
+    let detail = "";
+    if (x.status === "booked") { const b = x.booking;
+      detail = `${b.start}–${b.end} · Room: ${esc(b.room)}${b.doctor ? ` · ${esc(b.doctor)}` : ""}<br>` +
+        b.steps.map(st => `<span class="muted">${esc(st.label)} ${st.start}–${st.end}:</span> ${esc([st.doctor, st.staff].filter(Boolean).join(" + "))}`).join("<br>"); }
+    else if (x.status === "failed") detail = `<ul class="reasons" style="margin:0">${x.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`;
+    return `<tr><td>${x.index + 1}</td><td>${esc(x.treatment || x.treatment_id || "—")}<br><span class="muted">${esc(x.start || "")}${x.client ? " · " + esc(x.client) : ""}</span></td><td>${pill}</td><td>${detail}</td></tr>`;
+  }).join("");
+  return `<div style="margin:14px 0 8px">${summary}</div><table><tr><th>#</th><th>Treatment · start</th><th>Result</th><th>Details</th></tr>${rows}</table>`;
 }
 async function checkAvail() {
   const A = S.avail;
@@ -422,24 +496,23 @@ function drawAvailResults() {
     <div class="card">
       <h3>${esc(r.location)} · ${r.start}–${r.end} <span class="pill ${r.available ? "yes" : "no"}">${r.available ? "available" : "not available"}</span></h3>
       ${r.reasons.length ? `<ul class="reasons">${r.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-      <table><tr><th>Doctors free</th><td>${esc(r.doctors.map(d => d.name).join(", ") || "—")}</td></tr>
-      <tr><th>Staff free (need ${r.staff_needed})</th><td>${esc(r.staff.map(d => d.name).join(", ") || "—")}</td></tr>
-      <tr><th>Rooms free</th><td>${esc(r.rooms.map(d => d.name).join(", ") || "—")}</td></tr></table>
+      <table>${r.steps.map(st => `<tr><th>${esc(st.label)} ${st.start}–${st.end}</th><td>${st.needs_doctor ? `<b>Doctor:</b> ${esc(r.doctors.map(d => d.name).join(", ") || "—")}<br>` : ""}<b>Staff free:</b> ${esc(st.staff.map(d => d.name).join(", ") || "—")}</td></tr>`).join("")}
+      <tr><th>Rooms free (whole treatment)</th><td>${esc(r.rooms.map(d => d.name).join(", ") || "—")}</td></tr></table>
       ${r.available ? `<div class="row" style="margin:12px 0 0">
         <label>Client <input data-f="client" placeholder="optional"></label>
-        <label>Doctor <select data-f="doctor"><option value="">auto</option>${r.doctors.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label>
+        ${r.needs_doctor ? `<label>Doctor <select data-f="doctor"><option value="">auto</option>${r.doctors.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label>` : ""}
         <label>Room <select data-f="room"><option value="">auto</option>${r.rooms.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label>
-        <button class="btn" data-book="${i}">Book (staff auto-assigned)</button></div>` : ""}
+        <button class="btn" data-book="${i}">Book (staff auto-assigned per step)</button></div>` : ""}
     </div>`).join("");
   out.onclick = e => {
     const i = e.target.dataset.book; if (i === undefined) return;
     const card = e.target.closest(".card"), r = A.results[i], f = k => $(`[data-f=${k}]`, card).value;
     guard(async () => {
       const d = await api("POST", "/api/bookings", { treatment_id: r.treatment_id, location_id: r.location_id,
-        date: S.date, start: r.start, client: f("client"), doctor_id: f("doctor"), room_id: f("room") });
+        date: S.date, start: r.start, client: f("client"), doctor_id: card.querySelector("[data-f=doctor]") ? f("doctor") : "", room_id: f("room") });
       await loadClinic(); await checkAvail();
       const b = d.booking;
-      banner("ok", `Booked ${esc(b.treatment)} at ${esc(b.location)} ${b.start}–${b.end} with ${esc(b.doctor)}, ${esc(b.room)}, staff: ${esc(b.staff.join(", ") || "none")}.`, 6000);
+      banner("ok", `Booked ${esc(b.treatment)} at ${esc(b.location)} ${b.start}–${b.end} ${b.doctor ? "with " + esc(b.doctor) + ", " : ""}${esc(b.room)}, staff: ${esc(b.staff.join(", ") || "none")}. Press Save… to write it to disk.`, 6000);
     });
   };
 }
@@ -480,7 +553,7 @@ async function viewRoster() {
     <div class="card"><h3>Bookings on ${esc(S.date)}</h3>
       ${bookings.length ? `<table><tr><th>Time</th><th>Treatment</th><th>Location / room</th><th>Doctor</th><th>Staff</th><th>Client</th><th></th></tr>` +
         bookings.map(b => `<tr><td>${b.start}–${b.end}</td><td>${esc(b.treatment)}</td><td>${esc(b.location)} / ${esc(b.room)}</td>
-          <td>${esc(b.doctor)}</td><td>${esc(b.staff.join(", ") || "—")}</td><td>${esc(b.client)}</td>
+          <td>${esc(b.doctor || "— (staff only)")}</td><td>${esc(b.staff.join(", ") || "—")}</td><td>${esc(b.client)}</td>
           <td><button class="link" data-del-booking="${b.id}">cancel</button></td></tr>`).join("") + "</table>"
         : `<span class="muted">No bookings.</span>`}
     </div>`;

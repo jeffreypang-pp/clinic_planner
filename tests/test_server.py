@@ -93,11 +93,36 @@ class ServerTests(unittest.TestCase):
         self.call("POST", "/api/save", {})
         self.assertEqual(Clinic.load_dir(self.dir).bookings, {})
 
+    def test_old_treatment_format_is_rejected_with_a_helpful_message(self):
+        planning = self.call("GET", "/api/clinic")[1]["groups"]["planning"]
+        planning["treatments"].append({"id": "peel", "name": "Peel", "duration_minutes": 30})
+        status, r = self.call("PUT", "/api/clinic", {"planning": planning})
+        self.assertEqual(status, 400)
+        self.assertIn("doctor_minutes", r["error"])
+        self.assertEqual(self.call("GET", "/api/status")[1]["unsaved"], [])    # nothing changed
+
+    def test_book_list_stops_at_first_failure_and_is_unsaved_until_saved(self):
+        before = self.disk()
+        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()   # a Monday; Dr Lim is the botox doctor at Central
+        items = [{"treatment_id": "botox", "start": "14:00", "client": "One"},
+                 {"treatment_id": "botox", "start": "14:00", "client": "Two"},   # same doctor, same time
+                 {"treatment_id": "consult", "start": "16:00"}]
+        body = {"location_id": "central", "date": day, "items": items}
+        status, r = self.call("POST", "/api/book-list", dict(body, dry_run=True))
+        self.assertEqual((status, [x["status"] for x in r["results"]]), (200, ["booked", "failed", "not_attempted"]))
+        self.assertEqual(self.call("GET", "/api/status")[1]["unsaved"], [])    # a dry run changes nothing
+        status, r = self.call("POST", "/api/book-list", body)
+        self.assertEqual((r["booked"], r["stopped_at"]), (1, 1))
+        self.assertEqual(self.disk(), before)                                   # booked in memory only
+        self.assertEqual([u["file"] for u in self.call("GET", "/api/status")[1]["unsaved"]], ["schedule.json"])
+        status, r = self.call("POST", "/api/book-list", {"location_id": "central", "date": day, "items": "nope"})
+        self.assertEqual(status, 400)
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")
         planning = r["groups"]["planning"]
-        planning["treatments"].append({"id": "peel", "name": "Peel", "duration_minutes": 30})
+        planning["treatments"].append({"id": "peel", "name": "Peel", "doctor_minutes": 30})
         status, r = self.call("PUT", "/api/clinic", {"planning": planning})
         self.assertEqual(status, 200)
         self.assertEqual([u["file"] for u in r["unsaved"]], ["planning.json"])

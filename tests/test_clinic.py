@@ -13,19 +13,22 @@ SUN = date(2026, 11, 22)
 
 
 def small_clinic() -> Clinic:
-    """2 locations; d1 does laser+botox, d2 botox only; 2 staff; nobody present yet."""
+    """2 locations. laser = numbing 15 + doctor 30 + staff 15 (60 min, needs a laser room);
+    botox = doctor 30 only; facial = staff-only 30.  d1 does laser+botox, d2 botox; s1, s2."""
     return Clinic.from_dict({
         "locations": [
             {"id": "a", "name": "A", "opening_hours": {"mon": ["09:00", "17:00"]},
              "rooms": [{"id": "a_laser", "name": "Laser", "equipment": ["laser"]},
+                       {"id": "a_laser2", "name": "Laser 2", "equipment": ["laser"]},
                        {"id": "a_plain", "name": "Plain", "equipment": []}]},
             {"id": "b", "name": "B", "opening_hours": {"mon": ["10:00", "18:00"]},
              "rooms": [{"id": "b_plain", "name": "Plain", "equipment": []}]},
         ],
         "treatments": [
-            {"id": "laser", "name": "Laser", "duration_minutes": 60,
-             "required_equipment": ["laser"], "staff_required": 1},
-            {"id": "botox", "name": "Botox", "duration_minutes": 30, "staff_required": 2},
+            {"id": "laser", "name": "Laser", "numbing_minutes": 15, "doctor_minutes": 30,
+             "staff_minutes": 15, "required_equipment": ["laser"]},
+            {"id": "botox", "name": "Botox", "doctor_minutes": 30},
+            {"id": "facial", "name": "Facial", "staff_minutes": 30},
         ],
         "doctors": [{"id": "d1", "name": "D1", "treatments": ["laser", "botox"]},
                     {"id": "d2", "name": "D2", "treatments": ["botox"]}],
@@ -83,6 +86,34 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual((c.presence_at("doctor", "x", MON), c.presence_at("staff", "x", MON)), ("a", "b"))
 
 
+class TreatmentTests(unittest.TestCase):
+    def test_steps_are_laid_out_back_to_back(self):
+        c = small_clinic()
+        steps = [(x.name, format_slot(x.start), format_slot(x.end)) for x in c.treatments["laser"].steps(t("10:00"))]
+        self.assertEqual(steps, [("numbing", "10:00", "10:15"), ("doctor", "10:15", "10:45"),
+                                 ("staff", "10:45", "11:00")])
+        self.assertEqual(c.treatments["laser"].duration_slots * 15, 60)
+
+    def test_zero_minute_steps_are_skipped_and_staff_only(self):
+        c = small_clinic()
+        self.assertEqual([x.name for x in c.treatments["botox"].steps(0)], ["doctor"])
+        facial = c.treatments["facial"]
+        self.assertFalse(facial.needs_doctor)
+        self.assertEqual([x.name for x in facial.steps(0)], ["staff"])
+        self.assertTrue(c.treatments["laser"].needs_doctor)
+
+    def test_validation(self):
+        base = small_clinic().to_dict()
+        def with_treatment(**kw):
+            return dict(base, doctors=[], treatments=[dict({"id": "x", "name": "X"}, **kw)])
+        Clinic.from_dict(with_treatment(doctor_minutes=15))
+        for bad in (dict(), dict(doctor_minutes=20), dict(doctor_minutes=-15), dict(doctor_minutes="30"),
+                    dict(numbing_minutes=15),                    # numbing without a doctor treatment
+                    dict(duration_minutes=30), dict(doctor_minutes=15, staff_required=1)):
+            with self.assertRaises(ClinicError, msg=str(bad)):
+                Clinic.from_dict(with_treatment(**bad))
+
+
 class AvailabilityTests(unittest.TestCase):
     def setUp(self):
         self.c = small_clinic()
@@ -96,7 +127,10 @@ class AvailabilityTests(unittest.TestCase):
         r = self.avail()
         self.assertTrue(r["available"], r["reasons"])
         self.assertEqual([d["id"] for d in r["doctors"]], ["d1"])
-        self.assertEqual([x["id"] for x in r["rooms"]], ["a_laser"])  # equipment-limited
+        self.assertEqual([x["id"] for x in r["rooms"]], ["a_laser", "a_laser2"])  # equipment-limited
+        self.assertEqual([(x["name"], x["start"], x["end"]) for x in r["steps"]],
+                         [("numbing", "10:00", "10:15"), ("doctor", "10:15", "10:45"), ("staff", "10:45", "11:00")])
+        self.assertTrue(all([p["id"] for p in x["staff"]] == ["s1"] for x in r["steps"]))
 
     def test_present_people_are_free_all_day_unless_booked(self):
         for start in ("09:00", "12:00", "16:00"):
@@ -124,37 +158,57 @@ class AvailabilityTests(unittest.TestCase):
         self.assertTrue(any("No doctor qualified" in x for x in r["reasons"]))
         tick(self.c, "doctor", "d1", "b")
         tick(self.c, "staff", "s1", "b")
-        self.assertTrue(self.avail("botox", "b", "11:00")["available"] is False)  # botox needs 2 staff
-        self.assertFalse(self.avail("laser", "b", "11:00")["available"])           # B has no laser room
-        self.assertFalse(self.avail("laser", "a", "10:00")["available"])           # and they left A
+        self.assertTrue(self.avail("botox", "b", "11:00")["available"])
+        self.assertFalse(self.avail("laser", "b", "11:00")["available"])   # B has no laser room
+        self.assertFalse(self.avail("laser", "a", "10:00")["available"])   # and they left A
 
     def test_untick_removes_availability(self):
         tick(self.c, "doctor", "d1", None)
         self.assertFalse(self.avail()["available"])
 
-    def test_staff_count_required(self):
-        tick(self.c, "doctor", "d2", "a")
-        r = self.avail("botox")  # needs 2 staff, only s1 present
-        self.assertFalse(r["available"])
-        self.assertTrue(any("2 staff" in x for x in r["reasons"]))
-        tick(self.c, "staff", "s2", "a")
-        self.assertTrue(self.avail("botox")["available"])
+    def test_every_step_needs_a_staff_member(self):
+        """Numbing, doctor treatment and staff treatment each need 1 free staff for their own window."""
+        for window, step in (("10:00", "numbing"), ("10:15", "doctor treatment"), ("10:45", "staff treatment")):
+            c = small_clinic()
+            tick(c, "doctor", "d1", "a")
+            tick(c, "staff", "s1", "a")
+            c.set_blocked("staff", "s1", MON, t(window), t(window) + 1, True)   # the only staff, 15 min
+            r = c.check_availability("laser", "a", MON, t("10:00"))
+            self.assertFalse(r["available"], step)
+            self.assertTrue(any(f"No staff free for {step}" in x for x in r["reasons"]), (step, r["reasons"]))
+            tick(c, "staff", "s2", "a")                                          # a second person fixes it
+            self.assertTrue(c.check_availability("laser", "a", MON, t("10:00"))["available"], step)
 
-    def test_room_blocking_by_booking(self):
-        self.c.book("laser", "a", MON, t("10:00"))
+    def test_doctor_is_only_needed_for_the_doctor_step(self):
         tick(self.c, "staff", "s2", "a")
-        tick(self.c, "doctor", "d2", "a")
-        r = self.avail("laser", start="10:30")  # only laser room is taken
+        self.c.book("laser", "a", MON, t("10:00"))          # d1 busy 10:15-10:45 only
+        self.assertFalse(self.avail(start="10:00")["available"])    # doctor steps coincide
+        self.assertFalse(self.avail(start="09:45")["available"])    # doctor 10:00-10:30 overlaps 10:15-10:45
+        self.assertTrue(self.avail(start="10:30")["available"])     # numbing 10:30 overlaps, doctor 10:45 free
+        self.assertTrue(self.avail(start="09:30")["available"])     # doctor 09:45-10:15 ends as the other starts
+        self.assertTrue(self.avail(start="09:15")["available"])     # doctor 09:30-10:00 is clear of 10:15-10:45
+
+    def test_staff_only_treatment_needs_no_doctor(self):
+        tick(self.c, "doctor", "d1", None)
+        r = self.avail("facial", start="10:00")
+        self.assertTrue(r["available"], r["reasons"])
+        self.assertEqual((r["needs_doctor"], r["doctors"]), (False, []))
+        self.assertEqual([x["name"] for x in r["steps"]], ["staff"])
+        tick(self.c, "staff", "s1", None)
+        self.assertFalse(self.avail("facial")["available"])         # but it does need a staff member
+
+    def test_room_is_held_for_the_whole_treatment(self):
+        tick(self.c, "staff", "s2", "a")
+        self.c.set_blocked("room", "a_laser2", MON, t("09:00"), t("17:00"), True)   # only a_laser usable
+        self.c.book("laser", "a", MON, t("10:00"))                                  # a_laser 10:00-11:00
+        r = self.avail(start="10:45")      # staff step of the first overlaps, but its doctor is free at 11:00
         self.assertFalse(r["available"])
         self.assertTrue(any("room" in x for x in r["reasons"]))
-        self.assertTrue(self.avail("laser", start="11:00")["available"])  # back-to-back ok
+        self.assertTrue(self.avail(start="11:00")["available"])                      # back-to-back is fine
 
-    def test_double_booking_person_blocked(self):
-        tick(self.c, "staff", "s2", "a")
-        b = self.c.book("botox", "a", MON, t("10:00"))
-        self.assertEqual(b.doctor_id, "d1")
-        # d1 and both staff are now used; d2 isn't present -> no second botox at 10:15
-        self.assertFalse(self.avail("botox", start="10:15")["available"])
+    def test_equipment_decides_which_rooms_fit(self):
+        self.assertEqual({r["id"] for r in self.avail("laser")["rooms"]}, {"a_laser", "a_laser2"})
+        self.assertEqual({r["id"] for r in self.avail("facial")["rooms"]}, {"a_laser", "a_laser2", "a_plain"})
 
     def test_find_slots(self):
         slots = self.c.find_slots("laser", MON)
@@ -173,29 +227,31 @@ class BlockTests(unittest.TestCase):
         tick(self.c, "doctor", "d1", "a")
         tick(self.c, "staff", "s1", "a")
 
-    def ok(self, start):
-        return self.c.check_availability("laser", "a", MON, t(start))
+    def ok(self, start, treatment="laser"):
+        return self.c.check_availability(treatment, "a", MON, t(start))
 
     def test_room_block(self):
-        self.assertTrue(self.ok("10:00")["available"])
         self.c.set_blocked("room", "a_laser", MON, t("10:30"), t("12:00"), True)
-        self.assertFalse(self.ok("10:00")["available"])   # 10:00-11:00 overlaps
-        self.assertTrue(self.ok("09:00")["available"])    # ends exactly when block starts
+        self.c.set_blocked("room", "a_laser2", MON, t("10:30"), t("12:00"), True)
+        self.assertTrue(self.ok("10:00")["available"] is False)   # 10:00-11:00 overlaps
+        self.assertTrue(self.ok("09:30")["available"])            # ends exactly when the block starts
         self.assertFalse(self.ok("11:30")["available"])
         self.assertTrue(self.ok("12:00")["available"])
         self.c.set_blocked("room", "a_laser", MON, t("10:00"), t("13:00"), False)
-        self.assertTrue(self.ok("10:00")["available"])
+        self.assertTrue(self.ok("10:00")["available"])            # a_laser is back
+        self.c.set_blocked("room", "a_laser2", MON, t("10:00"), t("13:00"), False)
         self.assertEqual(self.c.blocks, {})
 
-    def test_doctor_and_staff_block(self):
-        self.c.set_blocked("doctor", "d1", MON, t("12:00"), t("13:00"), True)  # lunch
-        self.assertFalse(self.ok("11:30")["available"])
-        self.assertTrue(self.ok("13:00")["available"])
-        self.c.set_blocked("doctor", "d1", MON, t("12:00"), t("13:00"), False)
-        self.c.set_blocked("staff", "s1", MON, t("14:00"), t("15:00"), True)
-        r = self.ok("14:00")
-        self.assertFalse(r["available"])
-        self.assertTrue(any("staff" in x for x in r["reasons"]))
+    def test_doctor_block_only_matters_during_the_doctor_step(self):
+        self.c.set_blocked("doctor", "d1", MON, t("10:00"), t("10:15"), True)   # laser's numbing window
+        self.assertTrue(self.ok("10:00")["available"])
+        self.c.set_blocked("doctor", "d1", MON, t("10:00"), t("10:15"), False)
+        self.c.set_blocked("doctor", "d1", MON, t("10:15"), t("10:30"), True)   # inside the doctor step
+        self.assertFalse(self.ok("10:00")["available"])
+        self.c.set_blocked("doctor", "d1", MON, t("10:15"), t("10:30"), False)
+        self.c.set_blocked("doctor", "d1", MON, t("12:00"), t("13:00"), True)   # lunch
+        self.assertFalse(self.ok("11:45", "botox")["available"])
+        self.assertTrue(self.ok("13:00", "botox")["available"])
 
     def test_block_validation(self):
         with self.assertRaises(ClinicError):
@@ -230,16 +286,32 @@ class BookingTests(unittest.TestCase):
     def test_book_auto_assigns_and_cancel_frees(self):
         c = self.c
         b = c.book("laser", "a", MON, t("09:00"), client="X")
-        self.assertEqual((b.doctor_id, b.room_id, b.staff_ids), ("d1", "a_laser", ["s1"]))
+        self.assertEqual((b.doctor_id, b.room_id), ("d1", "a_laser"))
+        self.assertEqual(b.staff, {"numbing": "s1", "doctor": "s1", "staff": "s1"})
         with self.assertRaises(ClinicError):
-            c.book("laser", "a", MON, t("09:30"))
+            c.book("laser", "a", MON, t("09:15"))     # doctor + staff still busy
         c.cancel_booking(b.id)
-        c.book("laser", "a", MON, t("09:30"))
+        c.book("laser", "a", MON, t("09:15"))
 
-    def test_explicit_unqualified_doctor_rejected(self):
+    def test_steps_can_be_done_by_different_staff_and_skipped_steps_have_none(self):
+        tick(self.c, "staff", "s2", "a")
+        self.c.set_blocked("staff", "s1", MON, t("10:15"), t("10:30"), True)       # s1 can't do the doctor step
+        b = self.c.book("laser", "a", MON, t("10:00"))
+        self.assertEqual(b.staff, {"numbing": "s1", "doctor": "s2", "staff": "s2"})
+        botox = self.c.book("botox", "a", MON, t("14:00"))
+        self.assertEqual(list(botox.staff), ["doctor"])                              # only the doctor step
+        facial = self.c.book("facial", "a", MON, t("15:00"))
+        self.assertEqual((facial.doctor_id, list(facial.staff)), (None, ["staff"]))
+
+    def test_explicit_choices_are_validated(self):
         tick(self.c, "doctor", "d2", "a")
         with self.assertRaises(ClinicError):
-            self.c.book("laser", "a", MON, t("09:00"), doctor_id="d2")
+            self.c.book("laser", "a", MON, t("09:00"), doctor_id="d2")              # unqualified
+        with self.assertRaises(ClinicError):
+            self.c.book("facial", "a", MON, t("09:00"), doctor_id="d1")             # staff-only
+        with self.assertRaises(ClinicError):
+            self.c.book("laser", "a", MON, t("09:00"), room_id="a_plain")           # wrong equipment
+        self.assertEqual(self.c.book("laser", "a", MON, t("09:00"), room_id="a_laser2").room_id, "a_laser2")
 
     def test_unticking_is_reported_not_destructive(self):
         self.c.book("laser", "a", MON, t("09:00"))
@@ -258,12 +330,102 @@ class BookingTests(unittest.TestCase):
     def test_blocking_after_booking_is_reported(self):
         self.c.book("laser", "a", MON, t("09:00"))
         self.c.set_blocked("room", "a_laser", MON, t("09:30"), t("10:00"), True)
-        self.assertTrue(any("Laser" in i for i in self.c.issues()))
+        self.assertTrue(any("room Laser" in i for i in self.c.issues()))
+        self.c.set_blocked("room", "a_laser", MON, t("09:30"), t("10:00"), False)
+        self.assertEqual(self.c.issues(), [])
+        self.c.set_blocked("doctor", "d1", MON, t("09:00"), t("09:15"), True)        # numbing window only
+        self.assertEqual(self.c.issues(), [])
+        self.c.set_blocked("doctor", "d1", MON, t("09:15"), t("09:30"), True)        # doctor step
+        self.assertTrue(any("doctor D1" in i for i in self.c.issues()))
 
     def test_changing_opening_hours_is_reported(self):
         self.c.book("laser", "a", MON, t("09:00"))
         self.c.set_opening_hours("a", {0: (t("10:00"), t("17:00"))})
         self.assertTrue(any("opening hours" in i for i in self.c.issues()))
+
+
+class BookListTests(unittest.TestCase):
+    """Go down a list of (treatment, proposed start); stop at the first that can't be done."""
+
+    def setUp(self):
+        self.c = small_clinic()
+        tick(self.c, "doctor", "d1", "a")
+        tick(self.c, "staff", "s1", "a")
+        tick(self.c, "staff", "s2", "a")
+
+    def run_list(self, items, **kw):
+        return self.c.book_list("a", MON, items, **kw)
+
+    @staticmethod
+    def statuses(r):
+        return [x["status"] for x in r["results"]]
+
+    def test_all_feasible_items_are_booked_in_order(self):
+        r = self.run_list([{"treatment_id": "laser", "start": "09:00", "client": "A"},
+                           {"treatment_id": "botox", "start": "10:30"},
+                           {"treatment_id": "facial", "start": "09:00"}])
+        self.assertEqual((self.statuses(r), r["booked"], r["stopped_at"]), (["booked"] * 3, 3, None))
+        self.assertEqual(len(self.c.bookings), 3)
+        self.assertEqual(r["results"][0]["booking"]["steps"][0]["label"], "Numbing")
+
+    def test_stops_at_first_failure_and_skips_the_rest(self):
+        r = self.run_list([{"treatment_id": "laser", "start": "09:00"},
+                           {"treatment_id": "laser", "start": "09:15"},   # d1 is in the doctor step 09:15-09:45
+                           {"treatment_id": "botox", "start": "14:00"}])  # perfectly feasible, but never tried
+        self.assertEqual(self.statuses(r), ["booked", "failed", "not_attempted"])
+        self.assertEqual((r["booked"], r["stopped_at"]), (1, 1))
+        self.assertTrue(any("doctor" in x for x in r["results"][1]["reasons"]))
+        self.assertEqual(len(self.c.bookings), 1)          # the first stays booked, nothing after it
+        self.assertEqual(r["results"][2]["treatment"], "Botox")   # skipped rows are still labelled
+
+    def test_each_item_sees_what_the_earlier_ones_used(self):
+        r = self.run_list([{"treatment_id": "botox", "start": "10:00"},
+                           {"treatment_id": "botox", "start": "10:00"}])   # only one doctor
+        self.assertEqual(self.statuses(r), ["booked", "failed"])
+        self.assertTrue(any("doctor" in x for x in r["results"][1]["reasons"]))
+
+    def test_not_enough_room_or_staff_also_stops_the_list(self):
+        c = small_clinic()
+        tick(c, "staff", "s1", "b")
+        r = c.book_list("b", MON, [{"treatment_id": "facial", "start": "10:00"},
+                                   {"treatment_id": "facial", "start": "10:15"},    # the one room + one staff are in use
+                                   {"treatment_id": "facial", "start": "12:00"}])
+        self.assertEqual(self.statuses(r), ["booked", "failed", "not_attempted"])
+        self.assertTrue(any(("room" in x) or ("staff" in x) for x in r["results"][1]["reasons"]))
+        # the room is the limit when staff are plentiful
+        tick(c, "staff", "s2", "b")
+        r = c.book_list("b", MON, [{"treatment_id": "facial", "start": "14:00"},
+                                   {"treatment_id": "facial", "start": "14:15"}])
+        self.assertTrue(any("room" in x for x in r["results"][1]["reasons"]))
+
+    def test_dry_run_reports_but_books_nothing(self):
+        items = [{"treatment_id": "laser", "start": "09:00"}, {"treatment_id": "laser", "start": "09:15"}]
+        before = self.c.to_dict()
+        r = self.run_list(items, dry_run=True)
+        self.assertEqual((self.statuses(r), r["dry_run"]), (["booked", "failed"], True))
+        self.assertEqual(self.c.to_dict(), before)
+        self.assertEqual(self.statuses(self.run_list(items)), ["booked", "failed"])     # same outcome for real
+        self.assertEqual(len(self.c.bookings), 1)
+
+    def test_bad_items_fail_instead_of_raising(self):
+        for bad, text in (({"treatment_id": "nope", "start": "10:00"}, "nope"),
+                          ({"treatment_id": "laser", "start": "10:10"}, "15-minute"),
+                          ({"treatment_id": "laser", "start": "08:00"}, "opening hours"),
+                          ({"treatment_id": "laser"}, "start")):
+            r = self.run_list([bad, {"treatment_id": "botox", "start": "12:00"}])
+            self.assertEqual(self.statuses(r), ["failed", "not_attempted"], bad)
+            self.assertIn(text, " ".join(r["results"][0]["reasons"]), bad)
+
+    def test_items_can_target_another_location(self):
+        tick(self.c, "staff", "s1", "b")
+        tick(self.c, "doctor", "d2", "b")
+        r = self.run_list([{"treatment_id": "botox", "start": "10:00", "location_id": "b"}])
+        self.assertEqual(self.statuses(r), ["booked"])
+        self.assertEqual(r["results"][0]["booking"]["location_id"], "b")
+
+    def test_empty_list(self):
+        self.assertEqual(self.run_list([]), {"results": [], "total": 0, "booked": 0, "stopped_at": None,
+                                             "dry_run": False})
 
 
 class ClearDayTests(unittest.TestCase):
@@ -339,7 +501,10 @@ class TimetableTests(unittest.TestCase):
         d1 = row(ta, "doctors", "d1")
         self.assertTrue(d1["here"])
         self.assertEqual(d1["at"], "a")
-        self.assertEqual(d1["cells"][t("09:00")], f"booked:{b.id}")
+        # laser at 09:00 = numbing 09:00-09:15, doctor 09:15-09:45, staff 09:45-10:00
+        # the doctor is only booked for their own step
+        self.assertEqual([d1["cells"][t(x)] for x in ("09:00", "09:15", "09:30", "09:45")],
+                         ["free", f"booked:{b.id}:doctor", f"booked:{b.id}:doctor", "free"])
         self.assertEqual(d1["cells"][t("10:00")], "free")
         self.assertEqual(d1["cells"][t("17:00")], "closed")  # present but location closed
         d2 = row(ta, "doctors", "d2")
@@ -347,11 +512,16 @@ class TimetableTests(unittest.TestCase):
         self.assertEqual((d2["at"], d2["cells"][t("12:00")]), ("b", "away:b"))
         self.assertEqual(row(tb, "doctors", "d1")["cells"][t("12:00")], "away:a")
         self.assertTrue(row(tb, "doctors", "d2")["here"])
+        s1 = row(ta, "staff", "s1")                       # one person did all three steps
+        self.assertEqual([s1["cells"][t(x)] for x in ("09:00", "09:15", "09:45", "10:00")],
+                         [f"booked:{b.id}:numbing", f"booked:{b.id}:doctor", f"booked:{b.id}:staff", "free"])
         s2 = row(ta, "staff", "s2")
         self.assertEqual((s2["here"], s2["at"], s2["cells"][t("12:00")]), (False, None, "off"))
         room = next(r for r in ta["rooms"] if r["id"] == "a_laser")["cells"]
-        self.assertEqual((room[t("08:45")], room[t("09:45")]), ("closed", f"booked:{b.id}"))
+        self.assertEqual((room[t("08:45")], room[t("09:45")]), ("closed", f"booked:{b.id}:all"))
+        self.assertEqual(room[t("10:00")], "free")        # the room is held 09:00-10:00 only
         self.assertEqual(len(ta["bookings"]), 1)
+        self.assertEqual([x["name"] for x in ta["bookings"][0]["steps"]], ["numbing", "doctor", "staff"])
         self.assertEqual(len(tb["rooms"]), 1)
 
     def test_weekly_roster(self):
