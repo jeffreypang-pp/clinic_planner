@@ -107,7 +107,7 @@ Try the Vercel behaviour locally without Vercel: `python -m clinic.server --stat
 | Staff | Interchangeable: any staff member can assist any treatment. Each step either **names** who does it or is left on **assign later** (the default); an unnamed step only counts as one staff member needed. |
 | Presence | Per **day**, a doctor/staff member is at **one location or none** (the tick box). Stored in `schedule.json` as `presence[date][doctors\|staff][id] = location_id`, so "at most one location per day" holds by construction. Once present they are **free all day unless booked or blocked**. |
 | Block | A time span on a date when a doctor, staff member or room can't be used (lunch, leave, maintenance). Optional. |
-| Booking | A treatment (its three times, the room, a start, optional name/client/template) at a location and date. Holds the room for the whole treatment; the doctor is busy only during the doctor step. Each step has a staff member named or *assign later* (`staff` in `schedule.json`: `{"numbing": null, "doctor": "kai_ping", "staff": null}`, null = assign later); the doctor is assigned automatically unless you pick one. Stored in `schedule.json` with its own `numbing_minutes` / `doctor_minutes` / `staff_minutes`. |
+| Booking | A treatment (its three times, the room, a start, optional name/client/template; unnamed = called by its room's name) at a location and date. Holds the room for the whole treatment; the doctor is busy only during the doctor step. Each step has a staff member named or *assign later* (`staff` in `schedule.json`: `{"numbing": null, "doctor": "kai_ping", "staff": null}`, null = assign later); the doctor is assigned automatically unless you pick one. Stored in `schedule.json` with its own `numbing_minutes` / `doctor_minutes` / `staff_minutes`. |
 
 A treatment can start at a slot at a location iff:
 the location is open for the whole treatment; the doctor step has a doctor ticked in there (qualified, if a template is used)
@@ -156,6 +156,8 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   **Save list… / Load / delete** keep named lists of the treatments in the panel (times, rooms, names, clients; not the bookings)
   in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); a list belongs to a
   location, and loading one switches to that location and replaces the list in the panel (bookings already made stay).
+  The treatment **name** is optional: leave it empty and the treatment is called by its room's name (shown as the box's placeholder
+  and used on the grid and in lists; a template's name is used if you pick a template, and a name you type always wins).
   The **Start** choices only offer times inside the location's opening hours for the selected date (one-off `date_overrides`
   included) at which the treatment still ends by closing time; a new row starts at opening time, and a start you picked that
   no longer fits (longer treatment, another day or location) is kept but flagged "outside opening hours". The Availability

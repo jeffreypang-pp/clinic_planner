@@ -420,6 +420,22 @@ class CustomTreatmentTests(unittest.TestCase):
         with self.assertRaises(ClinicError):
             self.add(start="13:00", n=0, d=0, st=15, doctor_id="d1")      # staff only: no doctor
 
+    def test_default_name_is_the_rooms_name(self):
+        nameless = self.add(room="a_laser2")                                   # no name, no template
+        self.assertEqual(nameless.name, "")                                    # nothing is stored for the default...
+        self.assertEqual(self.c.describe_booking(nameless)["treatment"], "Laser 2")   # ...it is the room's name
+        named = self.add(start="12:00", room="a_laser2", name="Mine")
+        self.assertEqual(self.c.describe_booking(named)["treatment"], "Mine")          # an explicit name wins
+        templated = self.add(start="14:00", room="a_laser", treatment_id="laser")
+        self.assertEqual(self.c.describe_booking(templated)["treatment"], "Laser")     # then the template's name
+        self.c.rooms["a_laser2"].name = "Renamed room"                                 # follows the room
+        self.assertEqual(self.c.describe_booking(nameless)["treatment"], "Renamed room")
+        self.c.set_blocked("room", "a_laser2", MON, t("10:15"), t("10:30"), True)      # shows up in messages too
+        self.assertTrue(any("Renamed room" in i for i in self.c.issues()))
+        blank = self.add(start="15:30", room="a_plain", name="   ", client="  Zed ")
+        self.assertEqual((blank.name, blank.client), ("", "Zed"))                      # a blank name means "use the room's name"
+        self.assertEqual(self.c.describe_booking(blank)["treatment"], "Plain")
+
     def test_availability_check_for_custom(self):
         av = self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, room_id="a_plain")
         self.assertTrue(av["available"], av["reasons"])
@@ -760,6 +776,16 @@ class BookListTests(unittest.TestCase):
             r = self.run_list([item, dict(base, room_id="a_plain", start="12:00")])
             self.assertEqual(self.statuses(r), ["failed", "not_attempted"], item)
             self.assertIn(text, " ".join(r["results"][0]["reasons"]), item)
+
+    def test_book_list_labels_nameless_items_with_the_room(self):
+        r = self.run_list([dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_laser2", start="09:00"),
+                           dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain", start="09:00", name="Mine"),
+                           dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_laser", start="09:00",
+                                treatment_id="laser")], dry_run=True)
+        self.assertEqual([x["treatment"] for x in r["results"]], ["Laser 2", "Mine", "Laser"])
+        self.assertEqual(r["results"][0]["booking"]["treatment"], "Laser 2")
+        r = self.run_list([dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="ghost", start="09:00")])
+        self.assertEqual((r["results"][0]["status"], r["results"][0]["treatment"]), ("failed", "Treatment"))   # unknown room: neutral label
 
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},

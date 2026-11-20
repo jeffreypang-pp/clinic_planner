@@ -565,7 +565,7 @@ function drawBookingPanel() {
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
       : `<span class="muted">not attempted</span>`;
     return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
-      <div class="bk-edit"><span class="n">${i + 1}.</span><input data-f="name" placeholder="treatment name (optional)" value="${esc(it.name)}">
+      <div class="bk-edit"><span class="n">${i + 1}.</span><input data-f="name" placeholder="${esc(rooms.find(r => r.id === it.room)?.name || "treatment name")}" title="Treatment name. Leave empty to use the room's name." value="${esc(it.name)}">
         <label title="Proposed start time: only times inside the opening hours at which the treatment still ends by closing time">Start${startSelectHtml(sr, it.start, 'data-f="start"')}</label></div>
       ${presets.length ? `<div class="bk-edit"><select data-f="preset" title="Optional: fills in the name and the three times. Its doctor skills and room equipment are then enforced."><option value="">Template (optional): custom treatment</option>${presets.map(x => `<option value="${x.id}" ${x.id === it.preset ? "selected" : ""}>${esc(x.name)} (${totalMin(x)} min)</option>`).join("")}</select></div>` : ""}
       <div class="bk-mins">

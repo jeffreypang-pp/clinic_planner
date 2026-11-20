@@ -30,7 +30,8 @@ Block      - times a doctor, staff member or room can't be used (leave,
              maintenance...).  Optional; default is nothing blocked.
 Booking    - one treatment added to the timetable by giving its three step times, the
              room and a start time (optionally linked to a Treatment template, whose doctor
-             skills and room equipment are then enforced).  The one rule on the times: if
+             skills and room equipment are then enforced).  Unless it is given a name (or
+             a template), it is called by its room's name.  The one rule on the times: if
              the doctor treatment time is 0, the numbing time must be 0 as well.
 
 Data is stored as three groups (three JSON files), by how often they change:
@@ -627,7 +628,7 @@ class Clinic:
             doctor = None
         b = Booking(booking_id or _new_id("bk"), plan.location_id, plan.room_id or av["rooms"][0]["id"],
                     plan.day, plan.start, plan.numbing, plan.doctor, plan.staff, doctor, dict(plan.staff_ids),
-                    name, client, plan.treatment_id)
+                    (name or "").strip(), (client or "").strip(), plan.treatment_id)   # a blank name = use the room's name
         self.bookings[b.id] = b
         return b
 
@@ -703,7 +704,9 @@ class Clinic:
         for i, item in enumerate(items):
             known = self.treatments.get(item.get("treatment_id"))
             custom = any(k in item for k in ("numbing_minutes", "doctor_minutes", "staff_minutes"))
-            shown = (item.get("name") or (known.name if known else "") or "Treatment") if custom else (known.name if known else None)
+            room = self.rooms.get(item.get("room_id"))
+            shown = (item.get("name") or (known.name if known else "") or (room.name if room else "Treatment")) if custom \
+                else (known.name if known else None)
             row = {"index": i, "treatment_id": item.get("treatment_id"), "treatment": shown,
                    "start": item.get("start"), "client": item.get("client", "")}
             results.append(row)
@@ -858,8 +861,10 @@ class Clinic:
                           + [row("staff", s) for s in self.staff.values()]}
 
     def display_name(self, b: Booking) -> str:
+        """What to call a booking: its own name, else its template's name, else its room's name."""
         known = self.treatments.get(b.treatment_id) if b.treatment_id else None
-        return b.name or (known.name if known else "Treatment")
+        room = self.rooms.get(b.room_id)
+        return b.name or (known.name if known else "") or (room.name if room else "Treatment")
 
     def describe_booking(self, b: Booking) -> dict:
         doctor = self.doctors[b.doctor_id].name if b.doctor_id else None
