@@ -5,26 +5,11 @@ from datetime import date, timedelta
 
 from .model import Clinic, WEEKDAYS, parse_time
 
-# weekday -> list of (location_id, start, end); doctors shuffle between locations
+# weekday (0=Mon) -> the one location the doctor is at that day (missing = not working)
 DOCTOR_ROSTER = {
-    "lim": {0: [("central", "09:00", "19:00")],
-            1: [("central", "09:00", "13:00"), ("riverside", "14:00", "19:00")],
-            2: [("riverside", "10:00", "20:00")],
-            3: [("central", "09:00", "19:00")],
-            4: [("northgate", "09:00", "17:00")],
-            5: [("central", "09:00", "17:00")]},
-    "patel": {0: [("riverside", "10:00", "20:00")],
-              1: [("northgate", "09:00", "17:00")],
-              2: [("central", "09:00", "19:00")],
-              3: [("riverside", "10:00", "20:00")],
-              4: [("central", "09:00", "19:00")],
-              5: [("northgate", "09:00", "13:00"), ("central", "14:00", "17:00")]},
-    "okafor": {0: [("central", "09:00", "19:00")],
-               1: [("riverside", "10:00", "20:00")],
-               2: [("northgate", "09:00", "17:00")],
-               3: [("northgate", "09:00", "17:00")],
-               4: [("riverside", "10:00", "20:00")],
-               5: [("riverside", "10:00", "16:00")]},
+    "lim": {0: "central", 1: "central", 2: "riverside", 3: "central", 4: "northgate", 5: "central"},
+    "patel": {0: "riverside", 1: "northgate", 2: "central", 3: "riverside", 4: "central", 5: "northgate"},
+    "okafor": {0: "central", 1: "riverside", 2: "northgate", 3: "northgate", 4: "riverside", 5: "riverside"},
 }
 
 
@@ -86,15 +71,14 @@ def build_sample(start: date | None = None, days: int = 28) -> Clinic:
     for offset in range(days):
         day = start + timedelta(days=offset)
         for doctor_id, roster in DOCTOR_ROSTER.items():
-            for loc_id, s, e in roster.get(day.weekday(), []):
-                clinic.add_shift("doctor", doctor_id, loc_id, day, parse_time(s), parse_time(e))
+            if day.weekday() in roster:
+                clinic.set_presence("doctor", doctor_id, day, roster[day.weekday()])
         # staff are interchangeable: rotate them around the open locations, 2 per site
         open_locs = [l for l in clinic.locations.values() if l.hours_on(day)]
         rotated = staff_ids[day.toordinal() % len(staff_ids):] + staff_ids[:day.toordinal() % len(staff_ids)]
         for i, loc in enumerate(open_locs):
             for sid in rotated[2 * i:2 * i + 2]:
-                o, c = loc.hours_on(day)
-                clinic.add_shift("staff", sid, loc.id, day, o, c)
+                clinic.set_presence("staff", sid, day, loc.id)
 
     # one example booking on the first open weekday
     day = next(start + timedelta(days=i) for i in range(7) if (start + timedelta(days=i)).weekday() == 0)

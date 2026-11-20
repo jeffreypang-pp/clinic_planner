@@ -1,9 +1,9 @@
 """Tiny stdlib HTTP server: JSON API + the single-page UI.
 
-    python -m clinic.server [--data clinic.json] [--port 8000]
+    python -m clinic.server [--data clinic_data] [--port 8000]
 
-Every change is persisted to the data file immediately, so the saved file is
-always the whole clinic (setup + shifts + bookings).
+Every change is persisted immediately into the data directory as three JSON files
+(resources.json, planning.json, schedule.json); only files whose content changed are rewritten.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .model import Clinic, ClinicError, NotFound, WEEKDAYS, format_slot, parse_date, parse_time
+from .model import Clinic, ClinicError, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
 STATIC = Path(__file__).parent / "static"
@@ -27,21 +27,26 @@ class App:
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.RLock()
-        if os.path.exists(path):
-            self.clinic = Clinic.load(path)
+        if Clinic.dir_has_data(path):
+            self.clinic = Clinic.load_dir(path)
         else:
             self.clinic = build_sample()
-            self.clinic.save(path)
+            self.clinic.save_dir(path)
 
     def persist(self) -> None:
-        self.clinic.save(self.path)
+        self.clinic.save_dir(self.path)
 
     # ---- handlers (each returns JSON-able data) --------------------------
     def get_clinic(self, q, body):
-        return {"clinic": self.clinic.to_dict(), "issues": self.clinic.issues(), "weekdays": WEEKDAYS}
+        return {"clinic": self.clinic.to_dict(), "groups": self.clinic.to_groups(),
+                "issues": self.clinic.issues(), "weekdays": WEEKDAYS}
 
     def put_clinic(self, q, body):
-        self.clinic = Clinic.from_dict(body)  # validates before replacing anything
+        """Replace one or more data groups, e.g. ``{"planning": {...}}``; the rest is kept.
+        Everything is validated together before anything is replaced or saved."""
+        if not isinstance(body, dict) or not body:
+            raise ClinicError(f"Send an object with one or more of {list(GROUPS)}")
+        self.clinic = Clinic.from_groups({**self.clinic.to_groups(), **body})
         self.persist()
         return self.get_clinic(q, None)
 
@@ -77,46 +82,27 @@ class App:
         self.persist()
         return {"ok": True}
 
-    def post_shifts(self, q, body):
-        """Add one shift per date in ``dates`` (all-or-nothing)."""
-        dates = body.get("dates") or [_need(body, "date")]
-        start, end = parse_time(_need(body, "start")), parse_time(_need(body, "end"))
-        added = []
-        try:
-            for d in dates:
-                added.append(self.clinic.add_shift(_need(body, "role"), _need(body, "person_id"),
-                                                   _need(body, "location_id"), d, start, end))
-        except ClinicError:
-            for s in added:
-                self.clinic.remove_shift(s.id)
-            raise
+    def put_presence(self, q, body):
+        """Tick / untick doctors and staff: ``location_id`` null = not in any location.
+        ``dates`` (list) or ``date`` (one day). One location per person per day."""
+        role, pid = _need(body, "role"), _need(body, "person_id")
+        loc = body.get("location_id") or None
+        dates = [parse_date(d) for d in (body.get("dates") or [_need(body, "date")])]
+        for d in dates:
+            self.clinic.set_presence(role, pid, d, loc)
         self.persist()
-        return {"added": len(added)}
+        return {"days": len(dates), "issues": self.clinic.issues()}
 
-    def get_shifts(self, q, body):
-        day = parse_date(_arg(q, "date"))
-        c = self.clinic
-        return {"shifts": [{
-            "id": s.id, "role": s.role, "person_id": s.person_id,
-            "person": c._people(s.role)[s.person_id].name,
-            "location_id": s.location_id, "location": c.locations[s.location_id].name,
-            "start": format_slot(s.start), "end": format_slot(s.end),
-        } for s in sorted(c.shifts.values(), key=lambda s: (s.role, s.person_id, s.start)) if s.date == day]}
-
-    def delete_shift(self, q, body, sid):
-        self.clinic.remove_shift(sid)
-        self.persist()
-        return {"ok": True, "issues": self.clinic.issues()}
+    def get_roster(self, q, body):
+        return self.clinic.roster(_arg(q, "start"), int(q.get("days", ["7"])[0]))
 
     def put_availability(self, q, body):
-        """Paint a time range available/unavailable for a doctor, staff member or room.
+        """Block/unblock a time range for a doctor, staff member or room.
 
-        Body: kind (doctor|staff|room), id, date, start, end, available (bool),
-        location_id (doctor/staff only), repeat_until (optional date: repeat every 7 days).
+        Body: kind (doctor|staff|room), id, date, start, end, available (bool; false = block),
+        repeat_until (optional date: repeat every 7 days).
         """
         kind, ident = _need(body, "kind"), _need(body, "id")
-        if kind not in ("doctor", "staff", "room"):
-            raise ClinicError(f"Unknown kind {kind!r}; expected doctor, staff or room")
         if not isinstance(body.get("available"), bool):
             raise ClinicError("Field 'available' must be true or false")
         day = parse_date(_need(body, "date"))
@@ -128,11 +114,7 @@ class App:
             raise ClinicError("Can repeat for at most 2 years")
         dates = [day + timedelta(days=7 * i) for i in range((until - day).days // 7 + 1)]
         for d in dates:
-            if kind == "room":
-                self.clinic.set_room_availability(ident, d, start, end, body["available"])
-            else:
-                self.clinic.set_person_availability(kind, ident, _need(body, "location_id"), d,
-                                                    start, end, body["available"])
+            self.clinic.set_blocked(kind, ident, d, start, end, not body["available"])
         self.persist()
         return {"days": len(dates), "issues": self.clinic.issues()}
 
@@ -169,9 +151,8 @@ ROUTES = [
     ("GET", r"/api/bookings", "get_bookings"),
     ("POST", r"/api/bookings", "post_booking"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
-    ("GET", r"/api/shifts", "get_shifts"),
-    ("POST", r"/api/shifts", "post_shifts"),
-    ("DELETE", r"/api/shifts/([\w-]+)", "delete_shift"),
+    ("PUT", r"/api/presence", "put_presence"),
+    ("GET", r"/api/roster", "get_roster"),
     ("PUT", r"/api/availability", "put_availability"),
     ("PUT", r"/api/locations/([\w-]+)/hours", "put_hours"),
 ]
@@ -229,7 +210,7 @@ def make_handler(app: App):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--data", default="clinic.json", help="where the clinic is saved")
+    ap.add_argument("--data", default="clinic_data", help="directory holding the 3 data files")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()

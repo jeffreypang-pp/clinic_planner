@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "locations": [
+    {
+      "id": "asia_square",
+      "name": "Asia Square",
+      "rooms": []
+    },
+    {
+      "id": "orchard",
+      "name": "Orchard",
+      "rooms": []
+    }
+  ],
+  "doctors": [
+    {
+      "id": "harvey",
+      "name": "Dr Harvey"
+    },
+    {
+      "id": "lim",
+      "name": "Dr Lim"
+    }
+  ],
+  "staff": [
+    {
+      "id": "kai_ping",
+      "name": "Kai Ping"
+    },
+    {
+      "id": "aurore",
+      "name": "Aurore"
+    },
+    {
+      "id": "lynn",
+      "name": "Lynn"
+    },
+    {
+      "id": "renee",
+      "name": "Renee"
+    }
+  ]
+}

@@ -3,13 +3,21 @@
 Timetable model for a multi-location aesthetics clinic. Python 3.10+ standard library only.
 
 ```bash
-python -m clinic.server            # http://127.0.0.1:8000, saves to clinic.json
+python -m clinic.server            # http://127.0.0.1:8000, saves into clinic_data/
 python -m unittest discover -s tests -t .
 ```
 
-The clinic lives in `clinic.json` (committed; pass `--data` to use another file). Every change in the UI
-is written back to it. If the file doesn't exist, a sample clinic (3 locations, 3 doctors, 6 staff,
-8 treatments, 4 weeks of roster) is generated instead.
+## Data: three files, grouped by how often they change (`clinic_data/`)
+
+| File | Changes | Contains |
+|---|---|---|
+| `resources.json` | rarely | locations, **rooms** (with equipment) per location, **doctors**, **staff** |
+| `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills**, **presence** (who is in which location each day) |
+| `schedule.json` | constantly | **bookings** and **blocked times** (per doctor / staff member / room) |
+
+Every action in the app saves immediately, and only the file(s) whose content changed are rewritten,
+so `resources.json` stays untouched in git when you only make bookings. The files reference each other by id
+and are validated together on load/save. If `clinic_data/` has no files, a sample clinic is generated.
 
 ## Model (`clinic/model.py`)
 
@@ -19,42 +27,48 @@ is written back to it. If the file doesn't exist, a sample clinic (3 locations, 
 | Location | Weekly opening hours (editable) + per-date overrides (`null` = closed that day). Owns rooms. |
 | Room | Belongs to one location; has equipment tags (`laser`, `hifu`, ...). |
 | Treatment | Duration (multiple of 15 min), required equipment, number of staff (0+). |
-| Doctor | Has a set of treatments they can perform. Needed for the whole treatment. |
-| Staff | Interchangeable: any free, rostered staff member can assist any treatment. |
-| Shift | A person at **one location** for a span on a date. Shuffling = back-to-back shifts at different sites. Shifts of one person can't overlap. |
-| Room block | Time span on a date when a room can't be used (`room_blocks` in the JSON). |
+| Doctor | Has a set of treatments they can perform (skills). Needed for the whole treatment. |
+| Staff | Interchangeable: any free, present staff member can assist any treatment. |
+| Presence | Per **day**, a doctor/staff member is at **one location or none** (the tick box). Stored as `presence[date][doctors\|staff][id] = location_id`, so "at most one location per day" holds by construction. Once present they are **free all day unless booked or blocked**. |
+| Block | A time span on a date when a doctor, staff member or room can't be used (lunch, leave, maintenance). Optional. |
 | Booking | Treatment + location + date + start; uses 1 doctor, N staff, 1 room for its full duration. |
 
 A treatment can start at a slot at a location iff, for the **whole** duration:
-the location is open; a qualified doctor is rostered *at that location* and not in another booking;
-enough staff are rostered there and free; and a room there with the required equipment is free.
+the location is open; a qualified doctor is ticked in *at that location that day* and neither booked nor blocked;
+enough staff are ticked in there and free; and a room there with the required equipment is free and not blocked.
 `Clinic.check_availability()` returns the free doctors/staff/rooms, or the specific reasons it can't.
 
-Editing the roster or opening hours never deletes bookings; any booking that no longer fits is
+Editing presence, blocks or opening hours never deletes bookings; any booking that no longer fits is
 reported in `Clinic.issues()` (shown as a banner in the UI).
 
 ## UI tabs
 
 * **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min
-  (free, booked, away at another location, not rostered, closed, room blocked). Click a free cell to check availability from that time.
-  **Edit availability**: drag across a row, then *Available here* / *Not available here* for a doctor or staff member
-  (their shifts are split/merged automatically; "available here" moves them from another location for that span),
-  or *Block* / *Unblock* for a room (maintenance etc.). Optionally repeat weekly until a date.
+  (free, booked, away at another location, not in any location today, closed, blocked).
+  **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
+  ticking someone who is at another location moves them here.
+  Click a free cell to check availability from that time.
+  **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
 * **Availability & booking** - choose treatment / location (or all) / start time; see who and what is free
   or why not; "find open slots" for the day; book with auto-assignment.
-* **Roster** - add/remove shifts (date ranges + weekdays), view and cancel bookings.
-* **Setup & save** - edit opening hours per weekday; edit the *whole clinic* as JSON (rooms, treatments,
-  doctors & skills, staff, shifts, bookings), validate and save; download/upload JSON.
+* **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
+  a form to set a location across a date range / weekdays, and the day's bookings (cancel here).
+* **Setup & save** - edit opening hours per weekday; edit each of the three data files as JSON
+  (add rooms, treatments, doctors, skills...), validate and save; download/upload a file.
 
 ## API
 
-`GET /api/clinic`, `PUT /api/clinic` (replace whole clinic, validated first),
-`GET /api/timetable?location=&date=`, `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`,
-`GET /api/slots?treatment=&date=[&location=]`, `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`,
-`GET|POST /api/shifts`, `DELETE /api/shifts/<id>`, `PUT /api/availability` (paint a doctor/staff/room range on or off, optional weekly repeat),
-`PUT /api/locations/<id>/hours`.
+`GET /api/clinic` (merged view + the 3 groups + issues), `PUT /api/clinic` (`{"resources": {...}}` etc.;
+replaces the given groups, validated together with the rest first),
+`GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,
+`PUT /api/presence` (`role`, `person_id`, `location_id` or null, `date`/`dates`),
+`PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
+`PUT /api/locations/<id>/hours`,
+`GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]`,
+`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`.
 
 ## Not modelled yet
 
-Travel time between locations, per-person shift limits/breaks, recurring weekly roster templates,
-client records, doctor-only vs doctor-and-staff-for-part-of-the-treatment, auth / multi-user editing.
+Travel time between locations, someone being at two locations in one day, breaks as a default,
+recurring weekly roster templates (use the roster's "many days" form), client records,
+doctor-only vs doctor-and-staff-for-part-of-the-treatment, auth / multi-user editing.

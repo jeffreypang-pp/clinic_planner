@@ -54,6 +54,7 @@
   /* timetable grid: one 18px cell per 15 minutes */
   .tt { overflow-x: auto; padding-bottom: 6px; }
   .tt-row { display: grid; align-items: stretch; margin-bottom: 2px; }
+  .tt-label input.here { margin: 0 7px 0 0; vertical-align: -2px; cursor: pointer; width: 15px; height: 15px; }
   .tt-label { position: sticky; left: 0; background: var(--panel); z-index: 2; padding: 3px 8px 3px 0;
               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
   .tt-label small { color: var(--muted); }
@@ -92,6 +93,12 @@
   textarea.json { width: 100%; height: 420px; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
   .hours td { padding: 3px 8px; }
   .days { display: flex; gap: 8px; }
+  table.roster td, table.roster th { padding: 3px 4px; text-align: center; }
+  table.roster td:first-child, table.roster th:first-child { text-align: left; white-space: nowrap; }
+  table.roster select { padding: 3px 4px; min-width: 96px; }
+  table.roster select.set { background: var(--free); border-color: var(--free-line); }
+  table.roster tr.group td { background: var(--bg); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .gtabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .days label { flex-direction: row; align-items: center; gap: 3px; color: var(--text); font-size: 13px; }
 </style>
 </head>
@@ -107,10 +114,10 @@
 
 <script>
 const TABS = [["timetable", "Timetable"], ["availability", "Availability & booking"],
-              ["shifts", "Roster (shifts)"], ["setup", "Setup & save"]];
+              ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
 const S = { editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
-            shiftForm: { role: "doctor", from: null, to: null, days: [0,1,2,3,4,5,6] } };
+            rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -135,16 +142,16 @@ function banner(kind, html, ms) {
   if (ms) bannerTimer = setTimeout(showIssues, ms);
 }
 function showIssues() {
-  if (S.issues.length) banner("warn", `<b>${S.issues.length} booking(s) no longer fit the roster/hours:</b><ul>` +
+  if (S.issues.length) banner("warn", `<b>${S.issues.length} booking(s) no longer fit the roster, blocks or opening hours:</b><ul>` +
       S.issues.map(i => `<li>${esc(i)}</li>`).join("") + "</ul>");
   else { const b = $("#banner"); b.className = ""; b.innerHTML = ""; }
 }
 const fail = e => banner("err", esc(e.message), 8000);
 async function guard(fn) { try { await fn(); } catch (e) { fail(e); } }
 
+function applyClinic(d) { S.clinic = d.clinic; S.groups = d.groups; S.issues = d.issues; S.weekdays = d.weekdays; }
 async function loadClinic() {
-  const d = await api("GET", "/api/clinic");
-  S.clinic = d.clinic; S.issues = d.issues; S.weekdays = d.weekdays;
+  applyClinic(await api("GET", "/api/clinic"));
   if (!S.location || !byId(locs(), S.location)) S.location = locs()[0]?.id;
   if (!S.avail.treatment || !byId(S.clinic.treatments, S.avail.treatment)) S.avail.treatment = S.clinic.treatments[0]?.id;
   showIssues();
@@ -160,22 +167,27 @@ $("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; S.av
 async function render() {
   renderNav(); $("#date").value = S.date;
   await guard(async () => { await ({timetable: viewTimetable, availability: viewAvailability,
-                                    shifts: viewShifts, setup: viewSetup})[S.tab](); });
+                                    roster: viewRoster, setup: viewSetup})[S.tab](); });
 }
 
+const LABEL = 200;  // px width of the name column in timetable rows
 // ---------- timetable ----------
 async function viewTimetable() {
   S.sel = null;
   S.tt = await api("GET", `/api/timetable?location=${S.location}&date=${S.date}`);
   const t = S.tt, [lo, hi] = t.view, n = hi - lo;
-  const cols = `grid-template-columns: 150px repeat(${n}, 19px)`;
+  const cols = `grid-template-columns: ${LABEL}px repeat(${n}, 19px)`;
   const header = `<div class="tt-row" style="${cols}"><div class="tt-label"></div>` +
     Array.from({length: n}, (_, i) => `<div class="tt-hour" style="${(lo + i) % 4 ? "border:0" : ""}">${(lo + i) % 4 ? "" : slotStr(lo + i)}</div>`).join("") + "</div>";
   const bookings = Object.fromEntries(t.bookings.map(b => [b.id, b]));
   const locName = id => byId(locs(), id)?.name || id;
 
   function rowHtml(r, sub, role) {
-    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+    // doctors/staff get a tick box: ticked = in THIS location today (at most one location per day)
+    const tickTitle = r.here ? `In ${t.location} today. Untick if they are not in any location.`
+      : r.at ? `At ${locName(r.at)} today. Tick to move them to ${t.location}.` : `Not in any location today. Tick to put them in ${t.location}.`;
+    const tick = role === "room" ? "" : `<input type="checkbox" class="here" data-role="${role}" data-id="${r.id}" ${r.here ? "checked" : ""} title="${esc(tickTitle)}">`;
+    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
     for (let i = lo; i < hi; ) {
       const c = r.cells[i];
       if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
@@ -188,13 +200,14 @@ async function viewTimetable() {
       const time = slotStr(i);
       if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free${S.editAvail ? "" : " (click to check availability)"}"></div>`;
       else if (c.startsWith("away:")) html += `<div class="cell away" title="${time} — at ${esc(locName(c.slice(5)))}">${esc(locName(c.slice(5))[0])}</div>`;
-      else html += `<div class="cell ${c}" title="${time} — ${{off: "not rostered", closed: "closed", blocked: "room unavailable (blocked)"}[c]}"></div>`;
+      else html += `<div class="cell ${c}" title="${time} — ${{off: "not in any location today", closed: "closed", blocked: "blocked (unavailable)"}[c]}"></div>`;
       i++;
     }
     return html + "</div>";
   }
   const section = (title, rows, sub, role) => `<h4>${title}</h4>` + (rows.length ? rows.map(r => rowHtml(r, sub?.(r), role)).join("") : `<div class="muted">none</div>`);
   const people = list => [...list.filter(r => r.here), ...list.filter(r => !r.here)];
+  const away = r => r.here ? "" : r.at ? `(at ${locName(r.at)})` : "(off today)";
 
   $("#main").innerHTML = `
     <div class="row">
@@ -205,12 +218,12 @@ async function viewTimetable() {
     <div class="legend">
       <span style="--c:var(--free)">free</span><span style="--c:var(--booked)">booked</span>
       <span style="--c:var(--away)">at another location (initial shown)</span>
-      <span style="--c:var(--off)">not rostered</span><span style="--c:var(--closed)">closed</span><span style="--c:var(--blocked)">room blocked</span>
+      <span style="--c:var(--off)">not in any location today</span><span style="--c:var(--closed)">closed</span><span style="--c:var(--blocked)">blocked</span>
       <span>each cell = 15 min</span>
     </div>
     <div class="card tt">${header}
-      ${section("Doctors", people(t.doctors), r => r.here ? "" : "(not here)", "doctor")}
-      ${section("Staff", people(t.staff), r => r.here ? "" : "(not here)", "staff")}
+      ${section("Doctors", people(t.doctors), away, "doctor")}
+      ${section("Staff", people(t.staff), away, "staff")}
       ${section("Treatment rooms", t.rooms, null, "room")}
     </div>
     <div id="editbar" class="card" ${S.editAvail ? "" : "hidden"}></div>`;
@@ -218,6 +231,14 @@ async function viewTimetable() {
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
   if (S.editAvail) setupEditing(lo, n);
+  $(".tt").onchange = async e => {  // the tick boxes
+    const cb = e.target.closest("input.here"); if (!cb) return;
+    try {
+      const r = await api("PUT", "/api/presence", { role: cb.dataset.role, person_id: cb.dataset.id, date: S.date,
+        location_id: cb.checked ? S.location : null });
+      await loadClinic(); await viewTimetable();
+    } catch (err) { fail(err); await viewTimetable(); }
+  };
   $(".tt").onclick = e => {
     if (S.editAvail) return;
     const c = e.target.closest(".cell.free"); if (!c) return;
@@ -228,7 +249,7 @@ async function viewTimetable() {
 
 // ---------- edit availability (drag on timetable rows) ----------
 function setupEditing(lo, n) {
-  const tt = $(".tt"), COL = 19, LABEL = 150;
+  const tt = $(".tt"), COL = 19;
   const rowOf = () => tt.querySelector(`.tt-row[data-kind="${S.sel.kind}"][data-id="${S.sel.id}"]`);
   const slotAt = (row, x) => lo + Math.max(0, Math.min(n - 1, Math.floor((x - row.getBoundingClientRect().left - LABEL) / COL)));
   const range = () => [Math.min(S.sel.a, S.sel.b), Math.max(S.sel.a, S.sel.b)];
@@ -256,28 +277,26 @@ function renderEditBar() {
   if (!sel) { bar.innerHTML = `<b>Edit availability</b><div class="muted">Drag across a doctor, staff or room row to select a time range (each cell = 15 min), then choose what to do. Nothing changes until you press a button.</div>`; return; }
   const [a, b] = [Math.min(sel.a, sel.b), Math.max(sel.a, sel.b)], start = slotStr(a), end = slotStr(b + 1);
   const list = t[{doctor: "doctors", staff: "staff", room: "rooms"}[sel.kind]], name = list.find(r => r.id === sel.id).name;
-  const room = sel.kind === "room";
-  bar.innerHTML = `<b>${esc(name)}</b> · ${start}–${end} on ${esc(S.date)} at ${esc(t.location)}
+  const room = sel.kind === "room", what = room ? "room" : "time";
+  bar.innerHTML = `<b>${esc(name)}</b> · ${start}–${end} on ${esc(S.date)}
     <div class="row" style="margin:10px 0 0">
-      ${room ? `<button class="btn danger" data-act="false">Block room (unavailable)</button>
-                <button class="btn" data-act="true">Unblock (available)</button>`
-             : `<button class="btn" data-act="true">Available at ${esc(t.location)}</button>
-                <button class="btn danger" data-act="false">Not available at ${esc(t.location)}</button>`}
+      <button class="btn danger" data-act="false">Block ${what} (unavailable)</button>
+      <button class="btn" data-act="true">Unblock (available)</button>
       <label>Repeat weekly until (optional) <input type="date" id="rep" min="${S.date}"></label>
       <button class="btn secondary" data-cancel="1">Clear selection</button>
     </div>
     <div class="muted" style="margin-top:8px">${room
-      ? "Blocked rooms can't be booked (e.g. maintenance). Existing bookings are kept but flagged."
-      : `“Available” puts them here for this span, replacing wherever else they were rostered in it. “Not available” only removes their availability at ${esc(t.location)}. Existing bookings are kept but flagged.`}
-      Repeat applies to the same weekday each week.</div>`;
+      ? "Blocked rooms can't be booked (e.g. maintenance)."
+      : "Doctors and staff who are ticked in are free all day unless booked or blocked. Block a time for lunch, leave, etc. (use the tick box for which location they are in)."}
+      Existing bookings are kept but flagged. Repeat applies to the same weekday each week.</div>`;
   bar.onclick = e => {
     if (e.target.dataset.cancel) { S.sel = null; $("#main").querySelectorAll(".sel").forEach(x => x.remove()); renderEditBar(); return; }
     const act = e.target.dataset.act; if (act === undefined) return;
     guard(async () => {
-      const r = await api("PUT", "/api/availability", { kind: sel.kind, id: sel.id, location_id: t.location_id, date: S.date,
+      const r = await api("PUT", "/api/availability", { kind: sel.kind, id: sel.id, date: S.date,
         start, end, available: act === "true", repeat_until: $("#rep").value || undefined });
       await loadClinic(); await viewTimetable();
-      if (!S.issues.length) banner("ok", `Saved ${esc(name)} ${start}–${end}${r.days > 1 ? ` for ${r.days} weeks` : ""}.`, 3000);
+      if (!S.issues.length) banner("ok", `${esc(name)} ${start}–${end} updated${r.days > 1 ? ` for ${r.days} weeks` : ""}.`, 3000);
     });
   };
 }
@@ -358,36 +377,39 @@ function drawAvailResults() {
   };
 }
 
-// ---------- roster / shifts ----------
-async function viewShifts() {
-  const F = S.shiftForm; F.from ||= S.date; F.to ||= S.date;
-  const [{shifts}, {bookings}] = await Promise.all([api("GET", `/api/shifts?date=${S.date}`), api("GET", `/api/bookings?date=${S.date}`)]);
-  const people = F.role === "doctor" ? S.clinic.doctors : S.clinic.staff;
+// ---------- roster (who is at which location each day) & bookings ----------
+const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const mondayOf = iso => addDays(iso, -((new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7));
+async function viewRoster() {
+  const F = S.rosterForm; F.from ||= S.date; F.to ||= S.date;
+  S.weekOf = mondayOf(S.weekOf || S.date);
+  const [roster, {bookings}] = await Promise.all([api("GET", `/api/roster?start=${S.weekOf}&days=7`), api("GET", `/api/bookings?date=${S.date}`)]);
+  const everyone = roster.people.map(p => ({...p, key: p.role + ":" + p.id}));
+  F.who ||= everyone[0]?.key;
   const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const cell = (p, i) => `<td><select data-role="${p.role}" data-id="${p.id}" data-date="${roster.dates[i]}" class="${p.at[i] ? "set" : ""}">
+      <option value="">—</option>${locs().map(l => `<option value="${l.id}" ${p.at[i] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></td>`;
+  const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
   $("#main").innerHTML = `
-    <div class="card"><h3>Shifts on ${esc(S.date)}</h3>
-      ${shifts.length ? `<table><tr><th>Role</th><th>Person</th><th>Location</th><th>Hours</th><th></th></tr>` +
-        shifts.map(s => `<tr><td>${s.role}</td><td>${esc(s.person)}</td><td>${esc(s.location)}</td><td>${s.start}–${s.end}</td>
-          <td><button class="link" data-del-shift="${s.id}">remove</button></td></tr>`).join("") + "</table>"
-        : `<span class="muted">No shifts on this date.</span>`}
+    <div class="card"><h3>Roster · week of ${esc(roster.dates[0])}</h3>
+      <div class="row"><button class="btn secondary" data-week="-7">← Previous week</button>
+        <button class="btn secondary" data-week="0">Week of selected date</button>
+        <button class="btn secondary" data-week="7">Next week →</button></div>
+      <table class="roster"><tr><th></th>${roster.dates.map((d, i) => `<th>${dayNames[i]} ${d.slice(8)}</th>`).join("")}</tr>
+        <tr class="group"><td colspan="8">Doctors</td></tr>${rows("doctor") || `<tr><td colspan="8" class="muted">none</td></tr>`}
+        <tr class="group"><td colspan="8">Staff</td></tr>${rows("staff") || `<tr><td colspan="8" class="muted">none</td></tr>`}</table>
+      <div class="muted" style="margin-top:8px">Pick the one location each person is at that day, or “—” if they are not in any location. Anyone in a location is free all day there unless booked or blocked. The same thing is the tick box on the Timetable tab.</div>
     </div>
-    <div class="card"><h3>Add shifts</h3>
+    <div class="card"><h3>Set a location for many days</h3>
       <div class="row">
-        <label>Role <select id="f-role"><option value="doctor" ${F.role==="doctor"?"selected":""}>Doctor</option><option value="staff" ${F.role==="staff"?"selected":""}>Staff</option></select></label>
-        <label>Person <select id="f-person">${people.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></label>
-        <label>Location <select id="f-loc">${locs().map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join("")}</select></label>
-        <label>From <select id="f-start">${timeOptions("09:00", 95)}</select></label>
-        <label>To <select id="f-end">${timeOptions("17:00")}</select></label>
-      </div>
-      <div class="row">
+        <label>Who <select id="f-who">${everyone.map(p => `<option value="${p.key}" ${p.key === F.who ? "selected" : ""}>${esc(p.name)} (${p.role})</option>`).join("")}</select></label>
+        <label>Location <select id="f-loc"><option value="">— not in any location</option>${locs().map(l => `<option value="${l.id}" ${l.id === F.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
         <label>First date <input type="date" id="f-from" value="${F.from}"></label>
         <label>Last date <input type="date" id="f-to" value="${F.to}"></label>
         <div><div class="muted" style="font-size:12px;margin-bottom:3px">On weekdays</div><div class="days">
           ${dayNames.map((n, i) => `<label><input type="checkbox" data-day="${i}" ${F.days.includes(i) ? "checked" : ""}>${n}</label>`).join("")}</div></div>
-        <button class="btn" id="f-add">Add shift(s)</button>
-      </div>
-      <div class="muted">A person can only be at one location at a time. To shuffle someone between sites, add two back-to-back shifts (e.g. 09:00–13:00 at one site, 13:00–17:00 at another). Adding is all-or-nothing across the date range.</div>
-    </div>
+        <button class="btn" id="f-add">Apply</button>
+      </div></div>
     <div class="card"><h3>Bookings on ${esc(S.date)}</h3>
       ${bookings.length ? `<table><tr><th>Time</th><th>Treatment</th><th>Location / room</th><th>Doctor</th><th>Staff</th><th>Client</th><th></th></tr>` +
         bookings.map(b => `<tr><td>${b.start}–${b.end}</td><td>${esc(b.treatment)}</td><td>${esc(b.location)} / ${esc(b.room)}</td>
@@ -395,25 +417,30 @@ async function viewShifts() {
           <td><button class="link" data-del-booking="${b.id}">cancel</button></td></tr>`).join("") + "</table>"
         : `<span class="muted">No bookings.</span>`}
     </div>`;
-  $("#f-role").onchange = e => { F.role = e.target.value; viewShifts(); };
+  const savePresence = (role, id, dates, location) => guard(async () => {
+    const r = await api("PUT", "/api/presence", { role, person_id: id, dates, location_id: location || null });
+    await loadClinic(); await viewRoster();
+    if (!S.issues.length) banner("ok", `Roster updated (${r.days} day${r.days > 1 ? "s" : ""}).`, 3000);
+  });
+  $("#main").onchange = e => { const t = e.target;
+    if (t.matches("table.roster select")) savePresence(t.dataset.role, t.dataset.id, [t.dataset.date], t.value); };
+  $("#f-who").onchange = e => F.who = e.target.value;
+  $("#f-loc").onchange = e => F.location = e.target.value;
   $("#f-from").onchange = e => F.from = e.target.value;
   $("#f-to").onchange = e => F.to = e.target.value;
   document.querySelectorAll("[data-day]").forEach(cb => cb.onchange = () =>
     F.days = [...document.querySelectorAll("[data-day]:checked")].map(x => +x.dataset.day));
-  $("#f-add").onclick = () => guard(async () => {
-    const dates = [], end = new Date(F.to + "T00:00:00Z");
-    if (new Date(F.from + "T00:00:00Z") > end) throw new Error("'Last date' is before 'First date'");
-    for (let d = new Date(F.from + "T00:00:00Z"); d <= end; d.setUTCDate(d.getUTCDate() + 1))
-      if (F.days.includes((d.getUTCDay() + 6) % 7)) dates.push(d.toISOString().slice(0, 10));
-    if (!dates.length) throw new Error("No dates match the chosen weekdays");
-    const r = await api("POST", "/api/shifts", { role: F.role, person_id: $("#f-person").value, location_id: $("#f-loc").value,
-      start: $("#f-start").value, end: $("#f-end").value, dates });
-    await loadClinic(); await viewShifts(); banner("ok", `Added ${r.added} shift(s).`, 4000);
-  });
+  $("#f-add").onclick = () => {
+    const dates = []; if (F.from > F.to) return fail(new Error("'Last date' is before 'First date'"));
+    for (let d = F.from; d <= F.to; d = addDays(d, 1)) if (F.days.includes((new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7)) dates.push(d);
+    if (!dates.length) return fail(new Error("No dates match the chosen weekdays"));
+    if (dates.length > 800) return fail(new Error("Too many days at once (max 800)"));
+    const [role, id] = F.who.split(":"); savePresence(role, id, dates, F.location);
+  };
   $("#main").onclick = e => {
-    const s = e.target.dataset.delShift, b = e.target.dataset.delBooking;
-    if (s) guard(async () => { const r = await api("DELETE", `/api/shifts/${s}`); S.issues = r.issues; await viewShifts(); showIssues(); });
-    if (b) guard(async () => { await api("DELETE", `/api/bookings/${b}`); await loadClinic(); await viewShifts(); });
+    const w = e.target.dataset.week, b = e.target.dataset.delBooking;
+    if (w !== undefined) { S.weekOf = w === "0" ? mondayOf(S.date) : addDays(S.weekOf, +w); guard(viewRoster); }
+    if (b) guard(async () => { await api("DELETE", `/api/bookings/${b}`); await loadClinic(); await viewRoster(); });
   };
 }
 
@@ -433,35 +460,49 @@ async function viewSetup() {
       </div>
       <div class="muted">One-off closures / special hours: edit <code>date_overrides</code> in the JSON below (e.g. <code>"2026-12-25": null</code>).</div>
     </div>
-    <div class="card"><h3>Whole clinic (locations, rooms, equipment, treatments, doctors &amp; skills, staff, shifts, bookings)</h3>
-      <div class="muted" style="margin-bottom:8px">Every change in the app is saved automatically on the server. Edit the JSON for anything without a form (add rooms, treatments, doctors…) and save it as a whole.</div>
+    <div class="card"><h3>Clinic data files</h3>
+      <div class="muted" style="margin-bottom:8px">The clinic is stored as three JSON files, grouped by how often they change. Every action in the app saves automatically; edit the JSON here for anything without a form (add rooms, treatments, doctors, skills…).</div>
+      <div class="gtabs" id="gtabs"></div>
+      <div class="muted" id="gdesc" style="margin-bottom:8px"></div>
       <textarea class="json" id="json" spellcheck="false"></textarea>
       <div class="row" style="margin:10px 0 0">
-        <button class="btn" id="j-save">Validate &amp; save whole clinic</button>
+        <button class="btn" id="j-save">Validate &amp; save</button>
         <button class="btn secondary" id="j-reload">Discard edits</button>
-        <button class="btn secondary" id="j-down">Download JSON</button>
-        <label>Upload JSON <input type="file" id="j-up" accept=".json,application/json"></label>
+        <button class="btn secondary" id="j-down">Download file</button>
+        <label>Upload file <input type="file" id="j-up" accept=".json,application/json"></label>
       </div></div>`;
-  const fillJson = () => $("#json").value = JSON.stringify(S.clinic, null, 2);
+  const GROUPS = {
+    resources: ["1 · Resources", "resources.json", "Locations, rooms (with their equipment), doctors and staff. Changes rarely."],
+    planning: ["2 · Planning", "planning.json", "Opening hours, one-off date overrides, treatments, doctor skills, and who is in which location each day (presence). Changes regularly."],
+    schedule: ["3 · Bookings & blocks", "schedule.json", "Bookings, and blocked times for doctors, staff and rooms. Changes constantly."],
+  };
+  const pretty = o => JSON.stringify(o, null, 2).replace(/\[\s+([^\[\]{}]*?)\s+\]/g, (m, inner) => "[" + inner.replace(/,\s+/g, ", ") + "]");
+  const fillJson = () => {
+    const g = S.setupGroup;
+    $("#gtabs").innerHTML = Object.entries(GROUPS).map(([k, v]) => `<button class="btn ${k === g ? "" : "secondary"}" data-g="${k}">${v[0]}</button>`).join("");
+    $("#gdesc").innerHTML = `<b>${GROUPS[g][1]}</b> — ${esc(GROUPS[g][2])}`;
+    $("#json").value = pretty(S.groups[g]);
+  };
   fillJson();
+  $("#gtabs").onclick = e => { if (e.target.dataset.g) { S.setupGroup = e.target.dataset.g; fillJson(); } };
   document.querySelectorAll("[data-save-hours]").forEach(btn => btn.onclick = () => guard(async () => {
     const box = btn.closest("[data-hours]"), hours = {};
     S.weekdays.forEach(d => { hours[d] = $(`.open[data-d=${d}]`, box).checked
       ? [$(`select[data-d=${d}][data-k=o]`, box).value, $(`select[data-d=${d}][data-k=c]`, box).value] : null; });
-    const r = await api("PUT", `/api/locations/${btn.dataset.saveHours}/hours`, { hours });
-    S.clinic = r.clinic; S.issues = r.issues; fillJson(); showIssues();
-    if (!S.issues.length) banner("ok", "Opening hours saved.", 3000);
+    applyClinic(await api("PUT", `/api/locations/${btn.dataset.saveHours}/hours`, { hours }));
+    fillJson(); showIssues();
+    if (!S.issues.length) banner("ok", "Opening hours saved (planning.json).", 3000);
   }));
   $("#j-save").onclick = () => guard(async () => {
     let data; try { data = JSON.parse($("#json").value); } catch (e) { throw new Error("Not valid JSON: " + e.message); }
-    const r = await api("PUT", "/api/clinic", data);
-    S.clinic = r.clinic; S.issues = r.issues; fillJson(); await loadClinic(); showIssues();
-    if (!S.issues.length) banner("ok", "Clinic saved.", 3000);
+    applyClinic(await api("PUT", "/api/clinic", { [S.setupGroup]: data }));
+    await loadClinic(); fillJson(); showIssues();
+    if (!S.issues.length) banner("ok", `${GROUPS[S.setupGroup][1]} saved.`, 3000);
   });
   $("#j-reload").onclick = () => guard(async () => { await loadClinic(); fillJson(); });
   $("#j-down").onclick = () => { const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(S.clinic, null, 2)], {type: "application/json"}));
-    a.download = "clinic.json"; a.click(); };
+    a.href = URL.createObjectURL(new Blob([$("#json").value + "\n"], {type: "application/json"}));
+    a.download = GROUPS[S.setupGroup][1]; a.click(); };
   $("#j-up").onchange = async e => { const f = e.target.files[0]; if (f) $("#json").value = await f.text(); };
 }
 

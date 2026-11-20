@@ -8,28 +8,37 @@ Concepts
 Location   - has weekly opening hours (plus optional per-date overrides) and rooms.
 Room       - belongs to one location, owns a set of equipment tags.
 Treatment  - duration (multiple of 15 min), required equipment, staff headcount.
-Doctor     - may only perform a subset of treatments.
+Doctor     - may only perform a subset of treatments (their "skills").
 Staff      - interchangeable; any staff member can assist any treatment.
-Shift      - a doctor/staff member works at ONE location for a span on a date.
-             Moving between locations = several shifts on the same day.
+Presence   - per DAY, a doctor/staff member is at ONE location or at none (the
+             tick box in the UI).  Once present they are free all day unless
+             booked for a treatment or explicitly blocked.
+Block      - times a doctor, staff member or room can't be used (leave,
+             maintenance...).  Optional; default is nothing blocked.
 Booking    - a treatment at a location/date/start using 1 doctor, N staff, 1 room.
 
-A person can't be at two places at once: shifts of the same person must not
-overlap, and a person can't be in two overlapping bookings.
+Data is stored as three groups (three JSON files), by how often they change:
+  resources - locations, rooms (+equipment), doctors, staff        (rarely)
+  planning  - opening hours, treatments, doctor skills, presence   (regularly)
+  schedule  - bookings and blocked times                           (constantly)
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from datetime import date as Date
+from datetime import date as Date, timedelta
 
 SLOT_MINUTES = 15
 SLOTS_PER_DAY = 24 * 60 // SLOT_MINUTES  # 96
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 FORMAT_VERSION = 1
+GROUPS = ("resources", "planning", "schedule")
+GROUP_FILES = {g: f"{g}.json" for g in GROUPS}
+BLOCK_KINDS = ("doctor", "staff", "room")
 
 
 class ClinicError(ValueError):
@@ -130,17 +139,6 @@ class Staff:
 
 
 @dataclass
-class Shift:
-    id: str
-    role: str  # "doctor" | "staff"
-    person_id: str
-    location_id: str
-    date: Date
-    start: int
-    end: int
-
-
-@dataclass
 class Booking:
     id: str
     treatment_id: str
@@ -167,10 +165,12 @@ class Clinic:
         self.treatments: dict[str, Treatment] = {}
         self.doctors: dict[str, Doctor] = {}
         self.staff: dict[str, Staff] = {}
-        self.shifts: dict[str, Shift] = {}
         self.bookings: dict[str, Booking] = {}
-        # (room_id, date) -> slots in which the room is unavailable (maintenance etc.)
-        self.room_blocks: dict[tuple[str, Date], set[int]] = {}
+        # (role, person_id, date) -> location_id.  A dict key per person per day,
+        # so "at most one location per day" holds by construction.
+        self.presence: dict[tuple[str, str, Date], str] = {}
+        # (kind, id, date) -> slots blocked; kind is doctor | staff | room
+        self.blocks: dict[tuple[str, str, Date], set[int]] = {}
 
     # ---- lookups ---------------------------------------------------------
     @staticmethod
@@ -205,91 +205,54 @@ class Clinic:
             new[int(wd)] = (span[0], span[1])
         loc.opening_hours = new
 
-    # ---- shifts ----------------------------------------------------------
-    def add_shift(self, role: str, person_id: str, location_id: str, day, start: int, end: int,
-                  shift_id: str | None = None) -> Shift:
+    def _resource_table(self, kind: str) -> dict:
+        if kind == "room":
+            return self.rooms
+        if kind in ("doctor", "staff"):
+            return self._people(kind)
+        raise ClinicError(f"Unknown kind {kind!r}; expected one of {list(BLOCK_KINDS)}")
+
+    # ---- presence: who is at which location on a day -----------------------
+    def set_presence(self, role: str, person_id: str, day, location_id: str | None) -> None:
+        """Put a doctor/staff member at ``location_id`` for the whole day (``None`` = not in
+        any location).  Replaces wherever they were that day: one location per day.
+        Existing bookings are never touched; see ``issues()``."""
         day = parse_date(day)
-        person = self._get(self._people(role), person_id, role)
-        loc = self._get(self.locations, location_id, "location")
-        _check_span(start, end, f"Shift for {person.name}")
-        for s in self.shifts.values():
-            if s.role == role and s.person_id == person_id and s.date == day \
-                    and _overlap(start, end, s.start, s.end):
-                where = self.locations[s.location_id].name
-                raise ClinicError(
-                    f"{person.name} already works {format_slot(s.start)}-{format_slot(s.end)} "
-                    f"at {where} on {day} (can't overlap {loc.name} "
-                    f"{format_slot(start)}-{format_slot(end)})")
-        shift = Shift(shift_id or _new_id("sh"), role, person_id, location_id, day, start, end)
-        self.shifts[shift.id] = shift
-        return shift
-
-    def remove_shift(self, shift_id: str) -> None:
-        self._get(self.shifts, shift_id, "shift")
-        del self.shifts[shift_id]
-
-    # ---- editing availability (paint a time range on/off) ---------------
-    def set_person_availability(self, role: str, person_id: str, location_id: str, day,
-                                start: int, end: int, available: bool) -> None:
-        """Make a doctor/staff member available (or not) at a location for ``[start, end)``.
-
-        ``available=True`` puts them at ``location_id`` for that span, replacing wherever
-        else they were rostered in it (they can't be in two places).  ``available=False``
-        removes only their availability *at that location* in the span.  Shifts are
-        re-derived and merged.  Bookings are never touched: any that no longer fit show
-        up in ``issues()``.
-        """
-        day = parse_date(day)
-        person = self._get(self._people(role), person_id, role)
-        self._get(self.locations, location_id, "location")
-        _check_span(start, end, f"Availability for {person.name}")
-        mine = [s for s in self.shifts.values()
-                if s.role == role and s.person_id == person_id and s.date == day]
-        where: dict[int, str] = {}
-        for s in mine:
-            for i in range(s.start, s.end):
-                where[i] = s.location_id
-        for i in range(start, end):
-            if available:
-                where[i] = location_id
-            elif where.get(i) == location_id:
-                del where[i]
-        runs: list[list] = []
-        for i in sorted(where):
-            if runs and runs[-1][0] == where[i] and runs[-1][2] == i:
-                runs[-1][2] = i + 1
-            else:
-                runs.append([where[i], i, i + 1])
-        old_ids = {(s.location_id, s.start, s.end): s.id for s in mine}
-        for s in mine:
-            del self.shifts[s.id]
-        for loc, a, b in runs:
-            sid = old_ids.get((loc, a, b)) or _new_id("sh")
-            self.shifts[sid] = Shift(sid, role, person_id, loc, day, a, b)
-
-    def set_room_availability(self, room_id: str, day, start: int, end: int, available: bool) -> None:
-        """Block (``available=False``) or unblock a room for ``[start, end)`` on a date."""
-        day = parse_date(day)
-        room = self._get(self.rooms, room_id, "room")
-        _check_span(start, end, f"Availability for {room.name}")
-        blocked = self.room_blocks.setdefault((room_id, day), set())
-        if available:
-            blocked.difference_update(range(start, end))
+        self._get(self._people(role), person_id, role)
+        if location_id is not None:
+            self._get(self.locations, location_id, "location")
+            self.presence[(role, person_id, day)] = location_id
         else:
-            blocked.update(range(start, end))
-        if not blocked:
-            del self.room_blocks[(room_id, day)]
+            self.presence.pop((role, person_id, day), None)
+
+    def presence_at(self, role: str, person_id: str, day) -> str | None:
+        return self.presence.get((role, person_id, parse_date(day)))
+
+    # ---- blocked times (doctor / staff / room) -------------------------------
+    def set_blocked(self, kind: str, resource_id: str, day, start: int, end: int, blocked: bool) -> None:
+        """Block or unblock ``[start, end)`` on a date for a doctor, staff member or room."""
+        day = parse_date(day)
+        res = self._get(self._resource_table(kind), resource_id, kind)
+        _check_span(start, end, f"Blocking {res.name}")
+        slots = self.blocks.setdefault((kind, resource_id, day), set())
+        if blocked:
+            slots.update(range(start, end))
+        else:
+            slots.difference_update(range(start, end))
+        if not slots:
+            del self.blocks[(kind, resource_id, day)]
+
+    def _is_blocked(self, kind: str, rid: str, day: Date, start: int, end: int) -> bool:
+        return bool(self.blocks.get((kind, rid, day), set()) & set(range(start, end)))
 
     # ---- availability ----------------------------------------------------
     def _person_status(self, role: str, pid: str, loc_id: str, day: Date, start: int, end: int,
                        ignore: str | None = None) -> str:
-        """'free' | 'off_shift' (not rostered at this location for the whole span) | 'busy'."""
-        covered: set[int] = set()
-        for s in self.shifts.values():
-            if s.role == role and s.person_id == pid and s.date == day and s.location_id == loc_id:
-                covered.update(range(s.start, s.end))
-        if not set(range(start, end)) <= covered:
-            return "off_shift"
+        """'free' | 'not_here' (not ticked in at this location that day) | 'busy' (blocked/booked)."""
+        if self.presence.get((role, pid, day)) != loc_id:
+            return "not_here"
+        if self._is_blocked(role, pid, day, start, end):
+            return "busy"
         for b in self._bookings_on(day):
             if b.id == ignore:
                 continue
@@ -297,9 +260,6 @@ class Clinic:
             if uses and _overlap(start, end, b.start, self._end(b)):
                 return "busy"
         return "free"
-
-    def _room_blocked(self, room_id: str, day: Date, start: int, end: int) -> bool:
-        return bool(self.room_blocks.get((room_id, day), set()) & set(range(start, end)))
 
     def _room_busy(self, room_id: str, day: Date, start: int, end: int, ignore: str | None) -> bool:
         return any(b.id != ignore and b.room_id == room_id
@@ -337,30 +297,30 @@ class Clinic:
             statuses = {p.id: self._person_status(role, p.id, location_id, day, start, end, ignore_booking)
                         for p in pool}
             return ([p for p in pool if statuses[p.id] == "free"],
-                    [p for p in pool if statuses[p.id] != "off_shift"])
+                    [p for p in pool if statuses[p.id] != "not_here"])
 
         # doctors
         skilled = [d for d in self.doctors.values() if t.id in d.treatments]
-        free_docs, rostered_docs = free_people("doctor", skilled)
+        free_docs, present_docs = free_people("doctor", skilled)
         if not skilled:
             reasons.append(f"No doctor performs {t.name}")
-        elif not rostered_docs:
-            reasons.append(f"No doctor qualified for {t.name} is on shift at {loc.name} for {span}")
+        elif not present_docs:
+            reasons.append(f"No doctor qualified for {t.name} is in {loc.name} on {day}")
         elif not free_docs:
-            reasons.append(f"Every qualified doctor on shift at {loc.name} is already booked for {span}")
+            reasons.append(f"Every qualified doctor in {loc.name} is booked or blocked for {span}")
 
         # staff (interchangeable)
-        free_staff, rostered_staff = free_people("staff", list(self.staff.values()))
+        free_staff, present_staff = free_people("staff", list(self.staff.values()))
         if len(free_staff) < t.staff_required:
             reasons.append(f"Needs {t.staff_required} staff but only {len(free_staff)} free at "
-                           f"{loc.name} for {span} ({len(rostered_staff)} on shift)")
+                           f"{loc.name} for {span} ({len(present_staff)} in {loc.name} that day)")
 
         # rooms
         fitting = [r for r in self.rooms.values()
                    if r.location_id == location_id and t.required_equipment <= r.equipment]
         free_rooms = [r for r in fitting
                       if not self._room_busy(r.id, day, start, end, ignore_booking)
-                      and not self._room_blocked(r.id, day, start, end)]
+                      and not self._is_blocked("room", r.id, day, start, end)]
         if not fitting:
             need = ", ".join(sorted(t.required_equipment)) or "any equipment"
             reasons.append(f"{loc.name} has no treatment room with the required equipment ({need})")
@@ -435,66 +395,73 @@ class Clinic:
     def timetable(self, location_id: str, day) -> dict:
         """Per-slot state of every doctor, staff member and room at one location.
 
-        Cell values: ``free`` | ``off`` (not rostered anywhere) | ``closed``
-        (room, location closed) | ``blocked`` (room manually made unavailable) |
-        ``away:<location_id>`` (working/booked at
-        another location) | ``booked:<booking_id>``.
+        Cell values: ``free`` | ``off`` (not in any location that day) | ``closed``
+        (location not open) | ``blocked`` (manually made unavailable) |
+        ``away:<location_id>`` (in / booked at another location) | ``booked:<booking_id>``.
         """
         day = parse_date(day)
         loc = self._get(self.locations, location_id, "location")
         hours = loc.hours_on(day)
         todays = self._bookings_on(day)
+        open_cells = ["free" if hours and hours[0] <= i < hours[1] else "closed"
+                      for i in range(SLOTS_PER_DAY)]
 
-        def person_cells(role, pid):
-            cells = ["off"] * SLOTS_PER_DAY
-            for s in self.shifts.values():
-                if s.role == role and s.person_id == pid and s.date == day:
-                    for i in range(s.start, s.end):
-                        cells[i] = "free" if s.location_id == location_id else f"away:{s.location_id}"
+        def with_blocks(kind, rid, cells):
+            for i in self.blocks.get((kind, rid, day), ()):
+                if cells[i] == "free":
+                    cells[i] = "blocked"
+            return cells
+
+        def person_row(role, p):
+            at = self.presence.get((role, p.id, day))
+            if at is None:
+                cells = ["off"] * SLOTS_PER_DAY
+            elif at != location_id:
+                cells = [f"away:{at}"] * SLOTS_PER_DAY
+            else:
+                cells = with_blocks(role, p.id, list(open_cells))
             for b in todays:
-                uses = b.doctor_id == pid if role == "doctor" else pid in b.staff_ids
+                uses = b.doctor_id == p.id if role == "doctor" else p.id in b.staff_ids
                 if uses:
                     tag = f"booked:{b.id}" if b.location_id == location_id else f"away:{b.location_id}"
                     for i in range(b.start, self._end(b)):
                         cells[i] = tag
-            return cells
+            return {"id": p.id, "name": p.name, "cells": cells,
+                    "here": at == location_id, "at": at}
 
-        def room_cells(room):
-            blocked = self.room_blocks.get((room.id, day), set())
-            cells = ["closed" if not (hours and hours[0] <= i < hours[1])
-                     else "blocked" if i in blocked else "free"
-                     for i in range(SLOTS_PER_DAY)]
+        def room_row(room):
+            cells = with_blocks("room", room.id, list(open_cells))
             for b in todays:
                 if b.room_id == room.id:
                     for i in range(b.start, self._end(b)):
                         cells[i] = f"booked:{b.id}"
-            return cells
+            return {"id": room.id, "name": room.name, "equipment": sorted(room.equipment), "cells": cells}
 
         here = [b for b in todays if b.location_id == location_id]
         lo, hi = hours if hours else (36, 76)
-        for s in self.shifts.values():
-            if s.date == day and s.location_id == location_id:
-                lo, hi = min(lo, s.start), max(hi, s.end)
         for b in here:
             lo, hi = min(lo, b.start), max(hi, self._end(b))
-
-        # "here" = has a shift at this location today; the UI lists those people first.
-        # Everyone is still returned so you can see who is off or at another location.
-        def row(p, role):
-            cells = person_cells(role, p.id)
-            return {"id": p.id, "name": p.name, "cells": cells,
-                    "here": any(c == "free" or c.startswith("booked:") for c in cells)}
 
         return {
             "location_id": loc.id, "location": loc.name, "date": day.isoformat(),
             "hours": [format_slot(hours[0]), format_slot(hours[1])] if hours else None,
             "view": [lo, hi],
-            "doctors": [row(d, "doctor") for d in self.doctors.values()],
-            "staff": [row(s, "staff") for s in self.staff.values()],
-            "rooms": [{"id": r.id, "name": r.name, "equipment": sorted(r.equipment), "cells": room_cells(r)}
-                      for r in self.rooms.values() if r.location_id == location_id],
+            "doctors": [person_row("doctor", d) for d in self.doctors.values()],
+            "staff": [person_row("staff", s) for s in self.staff.values()],
+            "rooms": [room_row(r) for r in self.rooms.values() if r.location_id == location_id],
             "bookings": [self.describe_booking(b) for b in sorted(here, key=lambda b: b.start)],
         }
+
+    def roster(self, start, days: int = 7) -> dict:
+        """Who is where for ``days`` consecutive days (for the weekly roster grid)."""
+        start = parse_date(start)
+        dates = [start + timedelta(days=i) for i in range(days)]
+        def row(role, p):
+            return {"role": role, "id": p.id, "name": p.name,
+                    "at": [self.presence.get((role, p.id, d)) for d in dates]}
+        return {"dates": [d.isoformat() for d in dates],
+                "people": [row("doctor", d) for d in self.doctors.values()]
+                          + [row("staff", s) for s in self.staff.values()]}
 
     def describe_booking(self, b: Booking) -> dict:
         t = self.treatments[b.treatment_id]
@@ -512,7 +479,7 @@ class Clinic:
     def issues(self) -> list[str]:
         """Existing bookings that no longer fit the roster, opening hours or rooms.
 
-        Editing shifts/hours never silently deletes bookings; instead they show up here.
+        Editing presence, blocks or hours never silently deletes bookings; instead they show up here.
         """
         out = []
         for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start)):
@@ -537,8 +504,13 @@ class Clinic:
 
     # ---- (de)serialisation ----------------------------------------------
     def to_dict(self) -> dict:
+        """The whole clinic as one JSON-able dict (see ``to_groups`` for the 3-file split)."""
         def hours_json(h):
             return None if h is None else [format_slot(h[0]), format_slot(h[1])]
+        presence: dict[str, dict] = {}
+        for (role, pid, day), loc in sorted(self.presence.items(), key=lambda kv: (kv[0][2], kv[0][0], kv[0][1])):
+            presence.setdefault(day.isoformat(), {"doctors": {}, "staff": {}})[
+                "doctors" if role == "doctor" else "staff"][pid] = loc
         return {
             "version": FORMAT_VERSION,
             "locations": [{
@@ -555,24 +527,21 @@ class Clinic:
             "doctors": [{"id": d.id, "name": d.name, "treatments": sorted(d.treatments)}
                         for d in self.doctors.values()],
             "staff": [{"id": s.id, "name": s.name} for s in self.staff.values()],
-            "shifts": [{"id": s.id, "role": s.role, "person_id": s.person_id,
-                        "location_id": s.location_id, "date": s.date.isoformat(),
-                        "start": format_slot(s.start), "end": format_slot(s.end)}
-                       for s in sorted(self.shifts.values(), key=lambda s: (s.date, s.location_id, s.start))],
-            "room_blocks": self._room_blocks_json(),
+            "presence": presence,
+            "blocks": self._blocks_json(),
             "bookings": [{"id": b.id, "treatment_id": b.treatment_id, "location_id": b.location_id,
                           "room_id": b.room_id, "doctor_id": b.doctor_id, "staff_ids": b.staff_ids,
                           "date": b.date.isoformat(), "start": format_slot(b.start), "client": b.client}
                          for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start))],
         }
 
-    def _room_blocks_json(self) -> list[dict]:
+    def _blocks_json(self) -> list[dict]:
         out = []
-        for (rid, day), slots in sorted(self.room_blocks.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        for (kind, rid, day), slots in sorted(self.blocks.items(), key=lambda kv: (kv[0][2], kv[0][0], kv[0][1])):
             run_start = prev = None
             for i in sorted(slots) + [None]:
                 if run_start is not None and i != prev + 1:
-                    out.append({"room_id": rid, "date": day.isoformat(),
+                    out.append({"kind": kind, "id": rid, "date": day.isoformat(),
                                 "start": format_slot(run_start), "end": format_slot(prev + 1)})
                     run_start = None
                 if i is not None and run_start is None:
@@ -649,17 +618,18 @@ class Clinic:
             unique(c.staff, sid, "staff")
             c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"))
 
-        for s in data.get("shifts", []):
-            sid = s.get("id") or _new_id("sh")
-            unique(c.shifts, sid, "shift")
-            c.add_shift(need(s, "role", "shift"), need(s, "person_id", "shift"),
-                        need(s, "location_id", "shift"), need(s, "date", "shift"),
-                        parse_time(need(s, "start", "shift")), parse_time(need(s, "end", "shift")), sid)
+        for day, entry in (data.get("presence") or {}).items():
+            extra = set(entry) - {"doctors", "staff"}
+            if extra:
+                raise ClinicError(f"presence {day}: unexpected keys {sorted(extra)}; use 'doctors' and 'staff'")
+            for key, role in (("doctors", "doctor"), ("staff", "staff")):
+                for pid, loc in (entry.get(key) or {}).items():
+                    c.set_presence(role, pid, day, loc)
 
-        for blk in data.get("room_blocks", []):
-            c.set_room_availability(need(blk, "room_id", "room block"), need(blk, "date", "room block"),
-                                    parse_time(need(blk, "start", "room block")),
-                                    parse_time(need(blk, "end", "room block")), False)
+        for blk in data.get("blocks", []):
+            start, end = parse_time(need(blk, "start", "block")), parse_time(need(blk, "end", "block"))
+            c.set_blocked(need(blk, "kind", "block"), need(blk, "id", "block"),
+                          need(blk, "date", "block"), start, end, True)
 
         for b in data.get("bookings", []):
             bid = b.get("id") or _new_id("bk")
@@ -682,22 +652,112 @@ class Clinic:
             c.bookings[bid] = booking
         return c
 
-    def save(self, path: str) -> None:
-        """Atomically write the whole clinic (setup + shifts + bookings) as JSON."""
-        directory = os.path.dirname(os.path.abspath(path))
-        os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
-                f.write("\n")
-            os.replace(tmp, path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+    # ---- the three data groups -------------------------------------------
+    def to_groups(self) -> dict[str, dict]:
+        """Split into ``resources`` / ``planning`` / ``schedule`` (see module docstring)."""
+        d = self.to_dict()
+        return {
+            "resources": {
+                "version": FORMAT_VERSION,
+                "locations": [{"id": l["id"], "name": l["name"], "rooms": l["rooms"]} for l in d["locations"]],
+                "doctors": [{"id": x["id"], "name": x["name"]} for x in d["doctors"]],
+                "staff": d["staff"],
+            },
+            "planning": {
+                "version": FORMAT_VERSION,
+                "opening_hours": {l["id"]: l["opening_hours"] for l in d["locations"]},
+                "date_overrides": {l["id"]: l["date_overrides"] for l in d["locations"]},
+                "treatments": d["treatments"],
+                "doctor_skills": {x["id"]: x["treatments"] for x in d["doctors"]},
+                "presence": d["presence"],
+            },
+            "schedule": {
+                "version": FORMAT_VERSION,
+                "blocks": d["blocks"],
+                "bookings": d["bookings"],
+            },
+        }
 
     @classmethod
-    def load(cls, path: str) -> "Clinic":
-        with open(path) as f:
-            return cls.from_dict(json.load(f))
+    def from_groups(cls, groups: dict) -> "Clinic":
+        """Inverse of ``to_groups``; any missing group counts as empty. Cross-checks references."""
+        for g in groups:
+            if g not in GROUPS:
+                raise ClinicError(f"Unknown data group {g!r}; expected {list(GROUPS)}")
+        res, plan, sched = (groups.get(g) or {} for g in GROUPS)
+        for name, part in zip(GROUPS, (res, plan, sched)):
+            if not isinstance(part, dict):
+                raise ClinicError(f"Group {name!r} must be a JSON object")
+        hours, overrides = plan.get("opening_hours") or {}, plan.get("date_overrides") or {}
+        loc_ids = {l.get("id") for l in res.get("locations", [])}
+        for what, table in (("opening_hours", hours), ("date_overrides", overrides)):
+            unknown = set(table) - loc_ids
+            if unknown:
+                raise ClinicError(f"planning.{what} refers to unknown location(s) {sorted(unknown)}")
+        skills = plan.get("doctor_skills") or {}
+        unknown = set(skills) - {d.get("id") for d in res.get("doctors", [])}
+        if unknown:
+            raise ClinicError(f"planning.doctor_skills refers to unknown doctor(s) {sorted(unknown)}")
+        return cls.from_dict({
+            "locations": [dict(l, opening_hours=hours.get(l.get("id")) or {},
+                               date_overrides=overrides.get(l.get("id")) or {})
+                          for l in res.get("locations", [])],
+            "treatments": plan.get("treatments", []),
+            "doctors": [dict(d, treatments=skills.get(d.get("id")) or []) for d in res.get("doctors", [])],
+            "staff": res.get("staff", []),
+            "presence": plan.get("presence", {}),
+            "blocks": sched.get("blocks", []),
+            "bookings": sched.get("bookings", []),
+        })
+
+    def save_dir(self, directory: str) -> list[str]:
+        """Write ``resources.json``, ``planning.json`` and ``schedule.json`` into ``directory``.
+
+        A file is only rewritten if its content changed (so git diffs stay small and the
+        rarely-changing groups stay untouched).  Returns the names of the files written.
+        """
+        os.makedirs(directory, exist_ok=True)
+        written = []
+        for group, data in self.to_groups().items():
+            path = os.path.join(directory, GROUP_FILES[group])
+            text = _dumps(data)
+            if os.path.exists(path):
+                with open(path) as f:
+                    if f.read() == text:
+                        continue
+            fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
+            written.append(GROUP_FILES[group])
+        return written
+
+    @classmethod
+    def load_dir(cls, directory: str) -> "Clinic":
+        groups = {}
+        for group, name in GROUP_FILES.items():
+            path = os.path.join(directory, name)
+            if os.path.exists(path):
+                with open(path) as f:
+                    try:
+                        groups[group] = json.load(f)
+                    except json.JSONDecodeError as e:
+                        raise ClinicError(f"{name}: invalid JSON ({e})") from None
+        return cls.from_groups(groups)
+
+    @staticmethod
+    def dir_has_data(directory: str) -> bool:
+        return any(os.path.exists(os.path.join(directory, n)) for n in GROUP_FILES.values())
+
+
+def _dumps(data) -> str:
+    """Pretty JSON, but short scalar lists (e.g. ["10:00", "20:00"]) stay on one line."""
+    text = json.dumps(data, indent=2)
+    text = re.sub(r'\[\n\s*([^\[\]{}]*?)\n\s*\]',
+                  lambda m: "[" + re.sub(r',\n\s*', ', ', m.group(1)) + "]", text)
+    return text + "\n"
