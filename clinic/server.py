@@ -85,6 +85,62 @@ class App:
         self.reload()
         return self.get_clinic(q, None)
 
+    # ---- save a copy to / load from a directory the user names (local server only) ------
+    @staticmethod
+    def _directory(raw) -> Path:
+        """The directory the user typed: ``~`` expanded, relative paths taken from where the server
+        was started, shown back in full so the confirmation says exactly where."""
+        if not isinstance(raw, str) or not raw.strip() or "\0" in raw:
+            raise ClinicError("Enter a directory")
+        path = Path(os.path.expanduser(raw.strip())).resolve()
+        if path.exists() and not path.is_dir():
+            raise ClinicError(f"{path} is a file, not a directory")
+        return path
+
+    @staticmethod
+    def _counts(clinic: Clinic) -> dict:
+        return {"locations": len(clinic.locations), "rooms": len(clinic.rooms), "doctors": len(clinic.doctors),
+                "staff": len(clinic.staff), "treatments": len(clinic.treatments), "bookings": len(clinic.bookings)}
+
+    def get_files(self, q, body):
+        """The exact text of the three data files for the current working data (nothing is written)."""
+        return {"files": self.clinic.render_files(), "counts": self._counts(self.clinic)}
+
+    def post_export(self, q, body):
+        """Save a *copy* of the clinic data (resources.json, planning.json, schedule.json) into any
+        directory.  The data folder and the unsaved-changes state are left alone.  ``dry_run`` only
+        reports what would be written (and which files would be overwritten)."""
+        target = self._directory(_need(body, "directory"))
+        texts = self.clinic.render_files()
+        existing = Clinic.read_files(str(target)) if target.is_dir() else {n: None for n in texts}
+        info = {"directory": str(target), "exists": target.is_dir(),
+                "files": [{"name": n, "exists": existing[n] is not None, "identical": existing[n] == texts[n]}
+                          for n in texts]}
+        if (body or {}).get("dry_run"):
+            return info
+        return {**info, "written": self.clinic.save_dir(str(target))}
+
+    def post_import(self, q, body):
+        """Load the clinic data from a directory, replacing the working data.  Like any other edit
+        it only changes memory: differences from the data folder show up as unsaved changes.
+        All three files must be there and valid.  ``dry_run`` validates and summarises only."""
+        target = self._directory(_need(body, "directory"))
+        if not target.is_dir():
+            raise ClinicError(f"{target} doesn't exist")
+        missing = [n for n, text in Clinic.read_files(str(target)).items() if text is None]
+        if missing:
+            raise ClinicError(f"{target} is missing {', '.join(missing)} (a clinic folder holds "
+                              "resources.json, planning.json and schedule.json)")
+        try:
+            clinic = Clinic.load_dir(str(target))
+        except ClinicError as e:
+            raise ClinicError(f"{target}: {e}") from None
+        info = {"directory": str(target), "summary": self._counts(clinic), "current": self._counts(self.clinic)}
+        if (body or {}).get("dry_run"):
+            return info
+        self.clinic = clinic
+        return {**info, **self.get_clinic(q, None)}
+
     def put_clinic(self, q, body):
         """Replace one or more data groups, e.g. ``{"planning": {...}}``; the rest is kept.
         Everything is validated together before anything is replaced or saved."""
@@ -219,6 +275,9 @@ ROUTES = [
     ("GET", r"/api/status", "get_status"),
     ("PUT", r"/api/clinic", "put_clinic"),
     ("POST", r"/api/save", "post_save"),
+    ("GET", r"/api/files", "get_files"),
+    ("POST", r"/api/export", "post_export"),
+    ("POST", r"/api/import", "post_import"),
     ("POST", r"/api/discard", "post_discard"),
     ("GET", r"/api/timetable", "get_timetable"),
     ("GET", r"/api/availability", "get_availability"),

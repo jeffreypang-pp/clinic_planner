@@ -58,6 +58,11 @@ def initial_payload(directory: str) -> dict:
             "hashes": file_hashes(Clinic.read_files(directory))}
 
 
+_NO_SERVER_DIRS = ("Saving to or loading from a server directory isn't available on this deployment: "
+                   "the server can't see your computer. Use Save to folder / Load from folder (they use "
+                   "a folder on your computer through the browser).")
+
+
 class StatelessApp(App):
     """The same handlers as ``App``, but backed by request-supplied state, not memory/disk."""
 
@@ -97,6 +102,12 @@ class StatelessApp(App):
         self.base_groups = self.clinic.to_groups()
         self.canon = self.clinic.render_files()
         return {"saved": sorted(files), "files": files, **self.get_clinic(q, None)}
+
+    def post_export(self, q, body):
+        raise ClinicError(_NO_SERVER_DIRS)
+
+    def post_import(self, q, body):
+        raise ClinicError(_NO_SERVER_DIRS)
 
     def post_discard(self, q, body):
         """Drop unsaved changes: back to the last saved/downloaded state, or, with

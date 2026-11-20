@@ -142,6 +142,9 @@
   #login input { width: 100%; margin: 12px 0 10px; padding: 9px 10px; font-size: 15px; }
   #login .btn { width: 100%; padding: 9px; }
   #login .err { color: var(--bad); min-height: 1.4em; margin-top: 8px; font-size: 13px; }
+  .dirbox { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+  .dirbox label { flex: 1; min-width: 260px; }
+  .dirbox input { width: 100%; }
   .gtabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .days label { flex-direction: row; align-items: center; gap: 3px; color: var(--text); font-size: 13px; }
 </style>
@@ -171,10 +174,8 @@
 <main id="main"></main>
 
 <script>
-const TABS = [["timetable", "Timetable"], ["availability", "Availability check"],
-              ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
+const TABS = [["timetable", "Timetable"], ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
 const S = { stateless: false, auth: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
-            avail: { treatment: null, location: "", start: "10:00", results: null, slots: null },
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
 // ---------- helpers ----------
@@ -208,11 +209,6 @@ function startOptions(spans, minutes, current) {
 const startSelectHtml = (r, sel, attrs) => `<select ${attrs}>${r.options.map(o => `<option value="${o.value}" ${o.value === sel ? "selected" : ""}>${o.label}</option>`).join("")}</select>`;
 const byId = (list, id) => list.find(x => x.id === id);
 const totalMin = t => t.numbing_minutes + t.doctor_minutes + t.staff_minutes;
-// "15 min numbing (1 staff) → 30 min doctor treatment (doctor + 1 staff) → 15 min staff treatment (1 staff)"
-const describeSteps = t => t.doctor_minutes === 0
-  ? `${t.staff_minutes} min carried out by staff alone (1 staff)`
-  : [t.numbing_minutes && `${t.numbing_minutes} min numbing (1 staff)`, `${t.doctor_minutes} min doctor treatment (doctor + 1 staff)`,
-     t.staff_minutes && `${t.staff_minutes} min staff treatment (1 staff)`].filter(Boolean).join(" → ");
 const STEP_TAG = { numbing: " · numbing", doctor: "", staff: " · staff tx", all: "" };
 const STEP_KEYS = ["numbing", "doctor", "staff"];                       // a row's minutes fields are named like the steps
 const activeSteps = it => STEP_KEYS.filter(k => +it[k] > 0);
@@ -376,7 +372,6 @@ window.addEventListener("beforeunload", e => { if (S.unsaved?.length) { e.preven
 async function loadClinic() {
   applyClinic(await api("GET", "/api/clinic"));
   if (!S.location || !byId(locs(), S.location)) S.location = locs()[0]?.id;
-  if (!S.avail.treatment || !byId(S.clinic.treatments, S.avail.treatment)) S.avail.treatment = S.clinic.treatments[0]?.id;
   showIssues();
 }
 
@@ -385,11 +380,11 @@ function renderNav() {
   $("#nav").innerHTML = TABS.map(([k, n]) => `<button class="${S.tab === k ? "on" : ""}" data-tab="${k}">${n}</button>`).join("");
 }
 $("#nav").onclick = e => { const t = e.target.dataset.tab; if (t) { S.tab = t; showIssues(); render(); } };
-$("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; S.avail.results = S.avail.slots = null; render(); } };
+$("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
 
 async function render() {
   renderNav(); $("#date").value = S.date;
-  await guard(async () => { await ({timetable: viewTimetable, availability: viewAvailability,
+  await guard(async () => { await ({timetable: viewTimetable,
                                     roster: viewRoster, setup: viewSetup})[S.tab](); });
 }
 
@@ -763,78 +758,6 @@ function renderEditBar() {
   };
 }
 
-// ---------- availability & booking ----------
-async function viewAvailability() {
-  const A = S.avail, tr = S.clinic.treatments;
-  const treatment = byId(tr, A.treatment);
-  if (!tr.length) {
-    $("#main").innerHTML = `<div class="card">The availability check works on <b>treatment templates</b>, and none are defined yet (<code>treatments</code> in planning.json, with doctor skills). You don't need any to book: add treatments directly on the <b>Timetable</b> tab by giving the numbing, doctor and staff times and the room.</div>`;
-    return;
-  }
-  const aSpans = (A.location ? [byId(locs(), A.location)] : locs()).map(l => hoursOn(l, S.date)).filter(Boolean);
-  let aStart = startOptions(aSpans, treatment ? totalMin(treatment) : 15, A.start);
-  if (aStart.outside && aStart.first && !A.startTouched) { A.start = aStart.first; aStart = startOptions(aSpans, treatment ? totalMin(treatment) : 15, A.start); }
-  $("#main").innerHTML = `
-    <div class="card">
-      <h3>Check one treatment</h3>
-      <div class="muted" style="margin-bottom:8px">Look-up only. Bookings are made on the <b>Timetable</b> tab; use “Add to Timetable” on a result to send it there.</div>
-      <div class="row">
-        <label>Treatment <select id="a-tr">${tr.map(t => `<option value="${t.id}" ${t.id === A.treatment ? "selected" : ""}>${esc(t.name)} (${totalMin(t)} min)</option>`).join("")}</select></label>
-        <label>Location <select id="a-loc"><option value="">All locations</option>${locs().map(l => `<option value="${l.id}" ${l.id === A.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
-        <label>Start time ${startSelectHtml(aStart, A.start, 'id="a-start"')}</label>
-        <button class="btn" id="a-check">Check availability</button>
-        <button class="btn secondary" id="a-slots">Find open slots on ${esc(S.date)}</button>
-      </div>
-      <div class="muted">${treatment ? `${esc(describeSteps(treatment))}; one room with ${treatment.required_equipment.length ? esc(treatment.required_equipment.join(", ")) : "no special equipment"} for the whole treatment. ` : ""}Date: <b>${esc(S.date)}</b> (change in the header). ${aStart.reason ? `<span style="color:var(--bad)">${esc(aStart.reason)}</span>` : "Start times shown fit inside the opening hours."}</div>
-    </div>
-    <div id="a-out"></div>`;
-  $("#a-tr").onchange = e => { A.treatment = e.target.value; A.results = A.slots = null; viewAvailability(); };
-  $("#a-loc").onchange = e => { A.location = e.target.value; A.results = A.slots = null; viewAvailability(); };
-  $("#a-start").onchange = e => { A.start = e.target.value; A.startTouched = true; A.results = null; };
-  $("#a-check").onclick = () => guard(checkAvail);
-  $("#a-slots").onclick = () => guard(findSlots);
-  drawAvailResults();
-  if (!A.results && !A.slots && A.location) guard(checkAvail);  // arrived by clicking a free cell
-}
-
-async function checkAvail() {
-  const A = S.avail;
-  const d = await api("GET", `/api/availability?treatment=${A.treatment}&date=${S.date}&start=${A.start}&location=${A.location}`);
-  A.results = d.results; A.slots = null; drawAvailResults();
-}
-async function findSlots() {
-  const A = S.avail;
-  const d = await api("GET", `/api/slots?treatment=${A.treatment}&date=${S.date}&location=${A.location}`);
-  A.slots = d.slots; A.results = null; drawAvailResults();
-}
-function drawAvailResults() {
-  const A = S.avail, out = $("#a-out");
-  if (A.slots) {
-    out.innerHTML = Object.entries(A.slots).map(([lid, list]) => `
-      <div class="card"><h3>${esc(byId(locs(), lid).name)}</h3>
-      ${list.length ? `<div class="chips">${list.map(s => `<span class="chip" data-loc="${lid}" data-start="${s}">${s}</span>`).join("")}</div>`
-                    : `<span class="muted">No open slot for this treatment.</span>`}</div>`).join("");
-    out.onclick = e => { const c = e.target.closest(".chip"); if (!c) return;
-      A.location = c.dataset.loc; A.start = c.dataset.start; guard(async () => { await viewAvailability(); }); };
-    return;
-  }
-  if (!A.results) { out.innerHTML = ""; return; }
-  out.innerHTML = A.results.map((r, i) => `
-    <div class="card">
-      <h3>${esc(r.location)} · ${r.start}–${r.end} <span class="pill ${r.available ? "yes" : "no"}">${r.available ? "available" : "not available"}</span></h3>
-      ${r.reasons.length ? `<ul class="reasons">${r.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-      <table>${r.steps.map(st => `<tr><th>${esc(st.label)} ${st.start}–${st.end}</th><td>${st.needs_doctor ? `<b>Doctor:</b> ${esc(r.doctors.map(d => d.name).join(", ") || "—")}<br>` : ""}<b>Staff:</b> ${st.capacity_left} more can be used here${st.staff.length ? ` · could be named: ${esc(st.staff.map(d => d.name).join(", "))}` : ""}</td></tr>`).join("")}
-      <tr><th>Rooms free (whole treatment)</th><td>${esc(r.rooms.map(d => d.name).join(", ") || "—")}</td></tr></table>
-      ${r.available ? `<div class="row" style="margin:12px 0 0"><button class="btn" data-use="${i}">Add to Timetable booking list →</button></div>` : ""}
-    </div>`).join("");
-  out.onclick = e => {
-    const i = e.target.dataset.use; if (i === undefined) return;
-    const r = A.results[i];
-    S.location = r.location_id; queueItem(it => { applyPreset(it, A.treatment); it.start = r.start; }, { append: true });
-    S.tab = "timetable"; render();
-  };
-}
-
 // ---------- roster (who is at which location each day) & bookings ----------
 const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const mondayOf = iso => addDays(iso, -((new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7));
@@ -907,6 +830,17 @@ async function viewRoster() {
 async function viewSetup() {
   const wd = S.weekdays, names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
   $("#main").innerHTML = `
+    <div class="card"><h3>Save to / load from a directory</h3>
+      ${S.stateless ? `<div class="dirbox"><button class="btn" id="dir-save">Save to folder…</button><button class="btn secondary" id="dir-load">Load from folder…</button></div>
+        <div class="muted" style="margin-top:8px">Pick a folder on your computer. <b>Save</b> copies ${FILE_NOTE}; <b>Load</b> replaces the working data with the files in a folder (you can then undo with Discard, or keep it with the top-bar Save).
+          Chrome and Edge write straight into the folder you pick; other browsers download the files and ask you to choose the files when loading.</div>`
+      : `<div class="dirbox"><label>Directory<input id="dir-path" list="dir-recent" value="${esc(recentDirs()[0] || "")}" placeholder="e.g. ~/clinic_backups/november   or   C:\\Users\\me\\clinic" spellcheck="false" autocomplete="off"></label>
+          <datalist id="dir-recent">${recentDirs().map(d => `<option value="${esc(d)}">`).join("")}</datalist>
+          <button class="btn" id="dir-save">Save to this directory…</button><button class="btn secondary" id="dir-load">Load from this directory…</button></div>
+        <div class="muted" style="margin-top:8px"><b>Save</b> writes a <i>copy</i> of ${FILE_NOTE} into the directory (created if needed); the data folder (<code>${esc(S.dataDir || "clinic_data")}</code>) and your unsaved changes are not affected.
+          <b>Load</b> replaces the working data with the files in that directory; like any edit it stays in memory (shown as unsaved changes) until you press <b>Save…</b> in the top bar, and Discard goes back.
+          A relative path starts from where the server was started; <code>~</code> means your home folder. You're asked to confirm before anything is written or replaced.</div>`}
+    </div>
     <div class="card"><h3>Opening hours (15-minute steps)</h3>
       <div class="row">${locs().map(l => `
         <div class="card" style="margin:0" data-hours="${l.id}"><b>${esc(l.name)}</b>
@@ -963,6 +897,98 @@ async function viewSetup() {
     a.href = URL.createObjectURL(new Blob([$("#json").value + "\n"], {type: "application/json"}));
     a.download = GROUPS[S.setupGroup][1]; a.click(); };
   $("#j-up").onchange = async e => { const f = e.target.files[0]; if (f) $("#json").value = await f.text(); };
+  $("#dir-save").onclick = () => guard(S.stateless ? saveToFolder : saveToDirectory);
+  $("#dir-load").onclick = () => guard(S.stateless ? loadFromFolder : loadFromDirectory);
+}
+
+// ---------- save a copy to / load from a directory ----------
+const FILE_NOTE = "resources.json, planning.json and schedule.json (not the saved treatment lists)";
+const GROUP_FILE_NAMES = { resources: "resources.json", planning: "planning.json", schedule: "schedule.json" };
+const DIR_KEY = "clinic-planner-dirs";
+const recentDirs = () => { try { return JSON.parse(localStorage.getItem(DIR_KEY)) || []; } catch (e) { return []; } };
+const rememberDir = d => { try { localStorage.setItem(DIR_KEY, JSON.stringify([d, ...recentDirs().filter(x => x !== d)].slice(0, 8))); } catch (e) {} };
+const countsText = c => `${c.locations} location(s), ${c.rooms} room(s), ${c.doctors} doctor(s), ${c.staff} staff, ${c.treatments} template(s), ${c.bookings} booking(s)`;
+const countsOfGroups = g => ({ locations: g.resources.locations.length, rooms: g.resources.locations.reduce((n, l) => n + (l.rooms || []).length, 0),
+  doctors: g.resources.doctors.length, staff: g.resources.staff.length, treatments: (g.planning.treatments || []).length, bookings: (g.schedule.bookings || []).length });
+const replaceWarning = () => S.unsaved.length ? `\n\nYour unsaved changes in ${S.unsaved.map(u => u.file).join(", ")} will be replaced.` : "";
+
+// local server: the typed directory is read / written by the server (it runs on this computer)
+function typedDirectory() {
+  const dir = $("#dir-path").value.trim();
+  if (!dir) throw new Error("Enter a directory first.");
+  return dir;
+}
+async function saveToDirectory() {
+  const dir = typedDirectory();
+  const info = await api("POST", "/api/export", { directory: dir, dry_run: true });
+  const lines = info.files.map(f => `  • ${f.name}: ${!f.exists ? "new file" : f.identical ? "already identical (left as it is)" : "will be OVERWRITTEN"}`).join("\n");
+  if (!confirm(`Save a copy of the clinic data to:\n  ${info.directory}\n\n${lines}\n\n${info.exists ? "" : "The directory doesn't exist yet and will be created.\n\n"}This only makes a copy: the data folder and your unsaved changes are not affected.`)) return;
+  const r = await api("POST", "/api/export", { directory: dir });
+  rememberDir(dir);
+  banner("ok", r.written.length ? `Saved ${esc(r.written.join(", "))} to ${esc(r.directory)}.` : `${esc(r.directory)} already had identical files; nothing was written.`, 6000);
+}
+async function loadFromDirectory() {
+  const dir = typedDirectory();
+  const info = await api("POST", "/api/import", { directory: dir, dry_run: true });
+  if (!confirm(`Load the clinic data from:\n  ${info.directory}\n\nThis replaces the working data.\n  now:    ${countsText(info.current)}\n  loaded: ${countsText(info.summary)}${replaceWarning()}\n\nNothing is written to the data folder until you press Save… in the top bar (Discard goes back).`)) return;
+  applyClinic(await api("POST", "/api/import", { directory: dir }));
+  rememberDir(dir); banner("ok", `Loaded the clinic data from ${esc(info.directory)}. Press Save… (top bar) to keep it in the data folder.`, 6000);
+  render();
+}
+
+// deployed (stateless) mode: the server can't see your computer, so use a folder you pick in the browser
+const canPickFolder = () => typeof window.showDirectoryPicker === "function";
+async function saveToFolder() {
+  const files = (await api("GET", "/api/files")).files;
+  if (!canPickFolder()) {
+    if (!confirm(`This browser can't save into a folder directly.\n\nDownload ${FILE_NOTE} instead?`)) return;
+    downloadFiles(files); banner("ok", "Downloaded the three files.", 5000); return;
+  }
+  let dir;
+  try { dir = await window.showDirectoryPicker({ mode: "readwrite" }); } catch (e) { if (e.name === "AbortError") return; throw e; }
+  const existing = {};
+  for (const name of Object.keys(files)) { try { existing[name] = await (await (await dir.getFileHandle(name)).getFile()).text(); } catch (e) { existing[name] = null; } }
+  const lines = Object.keys(files).map(n => `  • ${n}: ${existing[n] === null ? "new file" : existing[n] === files[n] ? "already identical (left as it is)" : "will be OVERWRITTEN"}`).join("\n");
+  if (!confirm(`Save a copy of the clinic data into the folder “${dir.name}”?\n\n${lines}\n\nThis only makes a copy: your working data and unsaved changes are not affected.`)) return;
+  const written = [];
+  for (const [name, text] of Object.entries(files)) {
+    if (existing[name] === text) continue;
+    const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(text); await w.close(); written.push(name);
+  }
+  banner("ok", written.length ? `Saved ${esc(written.join(", "))} into “${esc(dir.name)}”.` : `“${esc(dir.name)}” already had identical files; nothing was written.`, 6000);
+}
+function pickFolderFiles() {   // browsers without the folder API: pick a folder through a file input
+  return new Promise(resolve => {
+    const input = document.createElement("input"); input.type = "file"; input.webkitdirectory = true; input.multiple = true;
+    input.onchange = async () => {
+      const out = {}, names = Object.values(GROUP_FILE_NAMES);
+      for (const f of input.files) if (names.includes(f.name) && (f.webkitRelativePath || f.name).split("/").length <= 2) out[f.name] = await f.text();
+      resolve({ name: (input.files[0]?.webkitRelativePath || "").split("/")[0] || "the folder", texts: out });
+    };
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+async function loadFromFolder() {
+  let folder;
+  if (canPickFolder()) {
+    let dir; try { dir = await window.showDirectoryPicker({ mode: "read" }); } catch (e) { if (e.name === "AbortError") return; throw e; }
+    const texts = {};
+    for (const name of Object.values(GROUP_FILE_NAMES)) { try { texts[name] = await (await (await dir.getFileHandle(name)).getFile()).text(); } catch (e) {} }
+    folder = { name: dir.name, texts };
+  } else { folder = await pickFolderFiles(); if (!folder) return; }
+  const missing = Object.values(GROUP_FILE_NAMES).filter(n => folder.texts[n] === undefined);
+  if (missing.length) throw new Error(`“${folder.name}” is missing ${missing.join(", ")} (a clinic folder holds resources.json, planning.json and schedule.json).`);
+  const groups = {};
+  for (const [g, name] of Object.entries(GROUP_FILE_NAMES)) {
+    try { groups[g] = JSON.parse(folder.texts[name]); } catch (e) { throw new Error(`${name} in “${folder.name}” isn't valid JSON: ${e.message}`); }
+  }
+  let loaded; try { loaded = countsOfGroups(groups); } catch (e) { throw new Error(`“${folder.name}” doesn't look like clinic data: resources.json should be an object with locations, doctors and staff.`); }
+  const now = countsOfGroups(S.groups);
+  if (!confirm(`Load the clinic data from the folder “${folder.name}”?\n\nThis replaces the working data.\n  now:    ${countsText(now)}\n  loaded: ${countsText(loaded)}${replaceWarning()}\n\nYour files are not changed. Use Save (download) afterwards to keep the result; Discard goes back.`)) return;
+  applyClinic(await api("PUT", "/api/clinic", groups));
+  banner("ok", `Loaded the clinic data from “${esc(folder.name)}”.`, 6000);
+  render();
 }
 
 // ---------- boot ----------

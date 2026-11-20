@@ -160,8 +160,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   and used on the grid and in lists; a template's name is used if you pick a template, and a name you type always wins).
   The **Start** choices only offer times inside the location's opening hours for the selected date (one-off `date_overrides`
   included) at which the treatment still ends by closing time; a new row starts at opening time, and a start you picked that
-  no longer fits (longer treatment, another day or location) is kept but flagged "outside opening hours". The Availability
-  check's start picker follows the same rule (the union of the opening hours when it covers all locations).
+  no longer fits (longer treatment, another day or location) is kept but flagged "outside opening hours".
   Each row also has a **staff** pick for every step that needs one: *assign later* (default) or a named person (only people ticked in here).
   Under the staff rows, **Total staff** shows how many staff the treatments need in each 15-minute block (grey = none,
   amber = every available staff member in use, red = a shortage). Name or change who does a step afterwards with the dropdown on a
@@ -172,16 +171,24 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   **Clear day…**: cancels every booking and removes every blocked time for this location on this date
   (rooms here, plus doctors/staff ticked in here), after showing what will go and asking to confirm.
   Tick boxes are left alone, and like all edits it only changes memory until you Save…
-* **Availability check** - look-up only, for treatment templates: choose treatment / location (or all) / start time to see the free staff per step,
-  doctors and rooms, or why not; "find open slots" for the day; *Add to Timetable* sends a result to the booking panel.
 * **Roster & bookings** - a weekly grid to set each person's location per day (same data as the tick box),
   a form to set a location across a date range / weekdays, and the day's bookings (cancel here).
-* **Setup & save** - edit opening hours per weekday; edit each of the three data files as JSON
-  (add rooms, treatments, doctors, skills...), validate and apply (then Save… in the top bar); download/upload a file.
+* **Setup & save** - **save a copy to / load from a directory you choose**, edit opening hours per weekday, and edit each of the three
+  data files as JSON (add rooms, treatments, doctors, skills...), validate and apply (then Save… in the top bar); download/upload a file.
+
+  *Directory save/load* covers `resources.json`, `planning.json` and `schedule.json` (not the saved treatment lists, which have their
+  own Save list / Load). **Save** writes a *copy*: type any directory (`~` and relative paths work; it is created if needed), you are
+  shown exactly which files are new, identical (left alone) or will be overwritten, and the data folder and your unsaved changes are
+  untouched. **Load** replaces the working data with the three files in a directory (all three must be present and valid; nothing is
+  changed if they aren't); like any edit it stays in memory, shown as unsaved changes, until you Save… in the top bar, and Discard goes
+  back. Both ask for confirmation first. On the **Vercel deployment** the server can't see your computer (and must not read or write
+  its own paths), so these buttons use your browser's folder picker instead: Chrome/Edge write straight into the folder you pick;
+  other browsers download the files and let you choose the folder's files to load.
 
 ## API
 
-`GET /api/clinic` (merged view + the 3 groups + issues + unsaved/external files), `GET /api/status`,
+`GET /api/clinic` (merged view + the 3 groups + issues + unsaved/external files), `GET /api/status`, `GET /api/files` (the exact text of the three files),
+`POST /api/export` / `POST /api/import` (`directory`, optional `dry_run`; local server only: save a copy to / load from a directory),
 `POST /api/save` (`{"force": true}` to overwrite files changed on disk), `POST /api/discard`, `PUT /api/clinic` (`{"resources": {...}}` etc.;
 replaces the given groups in memory, validated together with the rest first),
 `GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,
@@ -189,7 +196,7 @@ replaces the given groups in memory, validated together with the rest first),
 `PUT /api/bookings/<id>/staff` (`{"staff": {step: staff_id | null}}`: name or clear who does a step),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
 `PUT /api/locations/<id>/hours`,
-`GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]`,
+`GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]` (look-ups; the page no longer has a tab for them),
 `GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id`, `items`, `overwrite`; `DELETE ?name=`),
 `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
