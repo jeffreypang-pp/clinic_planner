@@ -75,7 +75,7 @@
   .tt-row { position: relative; }
   .tt.edit .tt-row[data-kind] { cursor: crosshair; touch-action: none; user-select: none; }
   .tt.edit .cell.free:hover { outline: none; }
-  .sel { position: absolute; top: -1px; bottom: -1px; z-index: 3; pointer-events: none; border: 2px solid var(--accent);
+  .tt-row > .sel { position: absolute; top: -1px; bottom: -1px; z-index: 3; pointer-events: none; border: 2px solid var(--accent);
          background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 4px; }
   #editbar b { font-size: 15px; }
   .cell.away { background: var(--away); color: var(--away-text); text-align: center; line-height: 26px; font-weight: 600; }
@@ -155,7 +155,8 @@
   #dirpick .dp-item .tag { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-weight: 600; }
   #dirpick .dp-item.file { padding-left: 14px; }
   #dirpick .dp-item.dim { color: var(--muted); }
-  #dirpick .dp-item.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+  #dirpick .btn, #dirpick .dp-item, #dirpick h3 { user-select: none; }
+  #dirpick .dp-item.picked { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
   #dirpick .dp-item .size { margin-left: auto; font-size: 11px; color: var(--muted); }
   #dirpick .dp-item .tag + .size { margin-left: 8px; }
   #dirpick .dp-fname { display: flex; gap: 8px; align-items: center; }
@@ -1077,14 +1078,15 @@ function openPicker({ mode = "folder", start = "", filename = "", title = "" } =
         list.scrollTop = 0;
       } catch (e) { fail(e); }
     }
-    el.onclick = e => { if (e.target === el) finish(null); };
+    const openedAt = Date.now();   // a quick double-click on the button that opened us must not count as a click on the backdrop
+    el.onclick = e => { if (e.target === el && Date.now() - openedAt > 500) finish(null); };
     $("#dp-shortcuts").onclick = list.onclick = e => {
       const b = e.target.closest("button"); if (!b) return;
       if (b.dataset.pick) finish(b.dataset.pick);
       else if (b.dataset.go) go(b.dataset.go);
       else if (b.dataset.file) {
         if (mode === "save") $("#dp-filename").value = b.dataset.name;
-        else { selected = b.dataset.file; list.querySelectorAll(".dp-item.sel").forEach(x => x.classList.remove("sel")); b.classList.add("sel"); $("#dp-note").textContent = `Selected: ${b.dataset.name}`; $("#dp-note").style.color = ""; }
+        else { selected = b.dataset.file; list.querySelectorAll(".dp-item.picked").forEach(x => x.classList.remove("picked")); b.classList.add("picked"); $("#dp-note").textContent = `Selected: ${b.dataset.name}`; $("#dp-note").style.color = ""; }
       }
     };
     list.ondblclick = () => { if (mode === "open" && selected) accept(); };   // the first click already selected the file
@@ -1101,6 +1103,7 @@ function openPicker({ mode = "folder", start = "", filename = "", title = "" } =
     $("#dp-title").textContent = title || (mode === "save" ? "Save as…" : mode === "open" ? "Open a file" : "Choose a directory");
     $("#dp-filerow").hidden = mode !== "save"; $("#dp-filename").value = filename;
     $("#dp-hidden").checked = false; el.hidden = false; document.addEventListener("keydown", onKey);
+    window.getSelection()?.removeAllRanges();     // no stray page-text highlight left over from clicking the button
     $("#dp-input").value = ""; $("#dp-note").textContent = ""; $("#dp-shortcuts").innerHTML = "";      // don't flash the last visit's folder
     list.innerHTML = `<div class="muted" style="padding:12px">Loading…</div>`;
     go(start);
