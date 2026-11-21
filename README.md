@@ -168,6 +168,10 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
+  **Save to directory…**: choose any folder (the same chooser as in Setup & save) and save a copy of the clinic data there, bookings included,
+  after the usual confirmation listing which files are new / identical / overwritten. It copies the current working data (unsaved changes
+  included) and leaves the data folder and the unsaved-changes state alone; the chooser reopens in the folder you picked last. On the Vercel
+  deployment it uses the browser's folder picker.
   **Clear day…**: cancels every booking and removes every blocked time for this location on this date
   (rooms here, plus doctors/staff ticked in here), after showing what will go and asking to confirm.
   Tick boxes are left alone, and like all edits it only changes memory until you Save…

@@ -470,6 +470,7 @@ async function viewTimetable() {
       <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
       <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
       <button class="btn danger" id="clear-day" title="Remove all bookings and blocked times for ${esc(t.location)} on ${esc(S.date)}">Clear day…</button>
+      <button class="btn secondary" id="save-dir" title="Save a copy of the clinic data (including the bookings on this timetable) into a folder you choose">Save to directory…</button>
       <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
     </div>
     <div class="legend">
@@ -489,6 +490,7 @@ async function viewTimetable() {
   $("#loc").onchange = e => { S.location = e.target.value; render(); };
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
+  $("#save-dir").onclick = () => guard(saveCopyFromHere);
   $("#clear-day").onclick = () => guard(async () => {
     const body = { location_id: S.location, date: S.date }, where = `${t.location} on ${S.date}`;
     const p = await api("POST", "/api/clear-day", { ...body, dry_run: true });
@@ -993,11 +995,11 @@ function openDirPicker(start) {
     go(start);
   });
 }
-async function saveToDirectory() {
-  const dir = typedDirectory();
+async function saveToDirectory(dirArg) {
+  const dir = dirArg ?? typedDirectory();
   const info = await api("POST", "/api/export", { directory: dir, dry_run: true });
   const lines = info.files.map(f => `  • ${f.name}: ${!f.exists ? "new file" : f.identical ? "already identical (left as it is)" : "will be OVERWRITTEN"}`).join("\n");
-  if (!confirm(`Save a copy of the clinic data to:\n  ${info.directory}\n\n${lines}\n\n${info.exists ? "" : "The directory doesn't exist yet and will be created.\n\n"}This only makes a copy: the data folder and your unsaved changes are not affected.`)) return;
+  if (!confirm(`Save a copy of the clinic data to:\n  ${info.directory}\n\n${lines}\n\n${info.exists ? "" : "The directory doesn't exist yet and will be created.\n\n"}This saves the current working data, unsaved changes included. It only makes a copy: the data folder and your unsaved-changes state are not affected.`)) return;
   const r = await api("POST", "/api/export", { directory: dir });
   rememberDir(dir);
   banner("ok", r.written.length ? `Saved ${esc(r.written.join(", "))} to ${esc(r.directory)}.` : `${esc(r.directory)} already had identical files; nothing was written.`, 6000);
@@ -1009,6 +1011,15 @@ async function loadFromDirectory() {
   applyClinic(await api("POST", "/api/import", { directory: dir }));
   rememberDir(dir); banner("ok", `Loaded the clinic data from ${esc(info.directory)}. Press Save… (top bar) to keep it in the data folder.`, 6000);
   render();
+}
+
+// Timetable tab: pick the destination, then the same confirmed "save a copy" as in Setup & save
+async function saveCopyFromHere() {
+  if (S.stateless) return saveToFolder();                    // the browser's own folder picker
+  const dir = await openDirPicker(recentDirs()[0] || "");
+  if (!dir) return;
+  rememberDir(dir);                                          // a folder you picked is where the chooser opens next time
+  await saveToDirectory(dir);
 }
 
 // deployed (stateless) mode: the server can't see your computer, so use a folder you pick in the browser
@@ -1024,7 +1035,7 @@ async function saveToFolder() {
   const existing = {};
   for (const name of Object.keys(files)) { try { existing[name] = await (await (await dir.getFileHandle(name)).getFile()).text(); } catch (e) { existing[name] = null; } }
   const lines = Object.keys(files).map(n => `  • ${n}: ${existing[n] === null ? "new file" : existing[n] === files[n] ? "already identical (left as it is)" : "will be OVERWRITTEN"}`).join("\n");
-  if (!confirm(`Save a copy of the clinic data into the folder “${dir.name}”?\n\n${lines}\n\nThis only makes a copy: your working data and unsaved changes are not affected.`)) return;
+  if (!confirm(`Save a copy of the clinic data into the folder “${dir.name}”?\n\n${lines}\n\nThis saves the current working data, unsaved changes included. It only makes a copy: your working data and unsaved-changes state are not affected.`)) return;
   const written = [];
   for (const [name, text] of Object.entries(files)) {
     if (existing[name] === text) continue;
