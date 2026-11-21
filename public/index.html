@@ -485,7 +485,6 @@ async function viewTimetable() {
       <label>Date <input type="date" id="tt-date" value="${esc(S.date)}"></label>
       <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
       <button class="btn danger" id="clear-day" title="Remove all bookings and blocked times for ${esc(t.location)} on ${esc(S.date)}">Clear day…</button>
-      <button class="btn secondary" id="save-dir" title="Save a copy of the clinic data (including the bookings on this timetable) into a folder you choose">Save to directory…</button>
       <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
     </div>
     <div class="legend">
@@ -506,7 +505,6 @@ async function viewTimetable() {
   $("#tt-date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
-  $("#save-dir").onclick = () => guard(saveCopyFromHere);
   $("#clear-day").onclick = () => guard(async () => {
     const body = { location_id: S.location, date: S.date }, where = `${t.location} on ${S.date}`;
     const p = await api("POST", "/api/clear-day", { ...body, dry_run: true });
@@ -1128,15 +1126,6 @@ async function loadFromDirectory() {
   applyClinic(await api("POST", "/api/import", { directory: dir }));
   rememberDir(dir); banner("ok", `Loaded the clinic data from ${esc(info.directory)}. Press Save… (top bar) to keep it in the data folder.`, 6000);
   render();
-}
-
-// Timetable tab: pick the destination, then the same confirmed "save a copy" as in Setup & save
-async function saveCopyFromHere() {
-  if (S.stateless) return saveToFolder();                    // the browser's own folder picker
-  const dir = await openDirPicker(recentDirs()[0] || "");
-  if (!dir) return;
-  rememberDir(dir);                                          // a folder you picked is where the chooser opens next time
-  await saveToDirectory(dir);
 }
 
 // deployed (stateless) mode: the server can't see your computer, so use a folder you pick in the browser
