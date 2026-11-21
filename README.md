@@ -140,7 +140,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 
 ## UI tabs
 
-* **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min
+* **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min (the cells stretch to fill the window's width, so a normal day fits without scrolling sideways; the grid only scrolls if the day is too long for 14px cells)
   (free, booked per step, away at another location, not in any location today, closed, blocked).
   **This is where you book.** The **Add treatments** panel beside the grid takes treatments one at a time: for each, set the
   numbing / doctor / staff minutes (numbing locks to 0 when the doctor time is 0), the room and the start time (or click a free cell

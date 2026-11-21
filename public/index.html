@@ -28,6 +28,7 @@
            background: var(--panel); border-bottom: 1px solid var(--line); }
   h1 { font-size: 17px; margin: 0; }
   main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  main.wide { max-width: none; }   /* the timetable uses the whole window width */
   nav { display: flex; gap: 4px; flex-wrap: wrap; }
   nav button { background: none; border: 0; padding: 8px 14px; border-radius: 8px; color: var(--muted);
                font: inherit; cursor: pointer; }
@@ -57,7 +58,7 @@
   #banner.ok { display: block; background: var(--ok-bg); color: var(--ok); }
   #banner ul { margin: 4px 0 0 18px; padding: 0; }
 
-  /* timetable grid: one 18px cell per 15 minutes */
+  /* timetable grid: one cell per 15 minutes, stretched to the available width (at least 14px) */
   .tt { overflow-x: auto; padding-bottom: 6px; }
   .tt-row { display: grid; align-items: stretch; margin-bottom: 2px; }
   .tt-label input.here { margin: 0 7px 0 0; vertical-align: -2px; cursor: pointer; width: 15px; height: 15px; }
@@ -422,7 +423,7 @@ $("#nav").onclick = e => { const t = e.target.dataset.tab; if (t) { S.tab = t; s
 $("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
 
 async function render() {
-  renderNav(); $("#date").value = S.date;
+  renderNav(); $("#date").value = S.date; $("#main").classList.toggle("wide", S.tab === "timetable");
   await guard(async () => { await ({timetable: viewTimetable,
                                     roster: viewRoster, setup: viewSetup})[S.tab](); });
 }
@@ -433,7 +434,7 @@ async function viewTimetable() {
   S.sel = null;
   S.tt = await api("GET", `/api/timetable?location=${S.location}&date=${S.date}`);
   const t = S.tt, [lo, hi] = t.view, n = hi - lo;
-  const cols = `grid-template-columns: ${LABEL}px repeat(${n}, 19px)`;
+  const cols = `grid-template-columns: ${LABEL}px repeat(${n}, minmax(14px, 1fr))`;   // the 15-minute cells share the width, so the whole day fits without scrolling when it can
   const header = `<div class="tt-row" style="${cols}"><div class="tt-label"></div>` +
     Array.from({length: n}, (_, i) => `<div class="tt-hour" style="${(lo + i) % 4 ? "border:0" : ""}">${(lo + i) % 4 ? "" : slotStr(lo + i)}</div>`).join("") + "</div>";
   const bookings = Object.fromEntries(t.bookings.map(b => [b.id, b]));
@@ -817,15 +818,15 @@ async function runBooking(mode) {   // "next" | "all" | "check" (dry run)
 
 // ---------- edit availability (drag on timetable rows) ----------
 function setupEditing(lo, n) {
-  const tt = $(".tt"), COL = 19;
+  const tt = $(".tt"), colW = () => tt.querySelector(".tt-hour").getBoundingClientRect().width;   // the cells stretch to the window
   const rowOf = () => tt.querySelector(`.tt-row[data-kind="${S.sel.kind}"][data-id="${S.sel.id}"]`);
-  const slotAt = (row, x) => lo + Math.max(0, Math.min(n - 1, Math.floor((x - row.getBoundingClientRect().left - LABEL) / COL)));
+  const slotAt = (row, x) => lo + Math.max(0, Math.min(n - 1, Math.floor((x - row.getBoundingClientRect().left - LABEL) / colW())));
   const range = () => [Math.min(S.sel.a, S.sel.b), Math.max(S.sel.a, S.sel.b)];
   function drawSel() {
     tt.querySelectorAll(".sel").forEach(el => el.remove());
     if (!S.sel) return;
     const [a, b] = range(), el = document.createElement("div");
-    el.className = "sel"; el.style.left = (LABEL + (a - lo) * COL) + "px"; el.style.width = ((b - a + 1) * COL - 1) + "px";
+    el.className = "sel"; const COL = colW(); el.style.left = (LABEL + (a - lo) * COL) + "px"; el.style.width = ((b - a + 1) * COL - 1) + "px";
     rowOf().appendChild(el);
   }
   tt.onpointerdown = e => {
