@@ -433,7 +433,6 @@ const LABEL = 200;  // px width of the name column in timetable rows
 async function viewTimetable() {
   S.sel = null;
   S.tt = await api("GET", `/api/timetable?location=${S.location}&date=${S.date}`);
-  try { S.savedLists = (await api("GET", "/api/lists")).lists; } catch (e) { S.savedLists = []; fail(e); }
   const t = S.tt, [lo, hi] = t.view, n = hi - lo;
   const cols = `grid-template-columns: ${LABEL}px repeat(${n}, 19px)`;
   const header = `<div class="tt-row" style="${cols}"><div class="tt-label"></div>` +
@@ -632,13 +631,9 @@ function drawBookingPanel() {
       ${it.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${it.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
       ${it.note ? `<div class="muted">${esc(it.note)}</div>` : ""}${preview}</div>`;
   }).join("");
-  const nBooked = L.items.filter(i => i.status === "booked").length, nWait = L.items.length - nBooked, saved = S.savedLists || [];
+  const nBooked = L.items.filter(i => i.status === "booked").length, nWait = L.items.length - nBooked;
   panel.innerHTML = `<div class="bk-head"><div><b>Add treatments</b>${multi ? "" : " · " + esc(t.location)}<div class="muted">${esc(S.date)} · ${nBooked} booked · ${nWait} waiting</div></div>
       <button class="btn" id="bk-next-top" title="Book the first treatment in the list that isn't booked yet">Book next</button></div>
-    <div class="bk-lists"><button class="btn secondary" id="ls-save" title="Save this list of treatments under a name (asks you to confirm)">Save list…</button>
-      ${saved.length ? `<select id="ls-pick" title="Saved lists">${saved.map(l => `<option value="${esc(l.name)}" ${l.name === S.listName ? "selected" : ""}>${esc(l.name)} (${l.count}${(l.locations || []).length ? ", " + esc(l.locations.join(" + ")) : ""})</option>`).join("")}</select>
-        <button class="btn secondary" id="ls-load">Load</button><button class="link" id="ls-del" title="Delete the selected saved list">delete</button>`
-        : `<span class="muted">no saved lists yet</span>`}</div>
     <div class="bk-lists"><span class="muted">As a file:</span>
       <button class="btn secondary" id="lf-save" title="Save this list as a file in a folder you choose on your computer">Save to file…</button>
       <button class="btn secondary" id="lf-load" title="Load a list from a file on your computer">Load from file…</button></div>
@@ -647,7 +642,7 @@ function drawBookingPanel() {
       The doctor is chosen automatically (or pick one). Staff are interchangeable: leave a step on <b>assign later</b> (it still counts as one staff member in the <b>Total staff</b> row) or name someone, and name them afterwards from the booked row.
       The staff needed in any 15-minute block can't exceed the staff ticked in, and a named person can't be in two overlapping steps. Numbing is 0 when there is no doctor treatment. Click a free cell to use that time (and, on a room row, that room).
       A treatment that can't be carried out (not enough doctor, staff or room) is reported and nothing is booked for it.
-      <b>Save list…</b> stores the treatments in this list (times, rooms, names, clients; not the bookings) so you can <b>Load</b> them again later.</div></details>
+      <b>Save to file…</b> stores the treatments in this list (times, rooms, names, clients, clinics; not the bookings) so you can <b>Load from file…</b> again later.</div></details>
     ${rows}
     <div class="row" style="margin:10px 0 0">
       <button class="btn" id="bk-next" title="Book the first treatment in the list that isn't booked yet">Book next</button>
@@ -677,11 +672,8 @@ function drawBookingPanel() {
     else if (el.id === "bk-clear") { L.items = []; L.summary = ""; L.last = null; viewTimetable(); }
     else if (el.dataset.cancel !== undefined) guard(() => cancelBooked(+el.dataset.cancel));
     else if (el.id === "bk-next" || el.id === "bk-next-top") guard(() => runBooking("next"));
-    else if (el.id === "ls-save") guard(saveList);
     else if (el.id === "lf-save") guard(saveListFile);
     else if (el.id === "lf-load") guard(loadListFile);
-    else if (el.id === "ls-load") guard(() => loadList($("#ls-pick").value));
-    else if (el.id === "ls-del") guard(() => deleteList($("#ls-pick").value));
     else if (el.id === "bk-all") guard(() => runBooking("all"));
     else if (el.id === "bk-check") guard(() => runBooking("check")); };
   if (L.scrollNext) {   // keep the next row to fill in in view so you can keep pressing Book next
@@ -693,27 +685,6 @@ function drawBookingPanel() {
 // ---------- saved lists: explicit, confirmed saves into treatment_lists.json; load replaces the list in this panel ----------
 const toApiItem = it => ({ location_id: it.loc, name: it.name, treatment_id: it.preset || null, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor,
   staff_minutes: +it.staff, room_id: it.room, doctor_id: it.doctorId || null, staff: staffPayload(it), start: it.start, client: it.client });
-async function saveList() {
-  const L = S.list, t = S.tt;
-  if (!L.items.length) throw new Error("The list is empty: add a treatment first.");
-  const name = (prompt(`Save this list (${L.items.length} treatment${L.items.length === 1 ? "" : "s"} at ${t.location}) as:`, S.listName || "") || "").trim();
-  if (!name) return;
-  const exists = (S.savedLists || []).some(l => l.name === name);
-  if (!confirm(`${exists ? `Replace the saved list “${name}”?` : `Save a new list “${name}”?`}\n\n` +
-      `${L.items.length} treatment${L.items.length === 1 ? "" : "s"} at ${t.location}: times, rooms, names and clients (not the bookings).\n\n` +
-      (S.stateless ? "The list is kept in this browser only (it isn't written to the repository)." : `This writes treatment_lists.json in ${S.dataDir || "the data folder"}/. Nothing else is changed.`))) return;
-  const r = await api("PUT", "/api/lists", { name, location_id: S.location, items: L.items.map(toApiItem), overwrite: exists });
-  S.savedLists = r.lists; S.listName = name; drawBookingPanel();
-  banner("ok", `Saved the list “${esc(name)}” (${L.items.length}).`, 4000);
-}
-async function loadList(name) {
-  const l = (S.savedLists || []).find(x => x.name === name); if (!l) return;
-  const L = S.list;
-  if (L.items.some(i => i.status === "booked" || i.touched) &&
-      !confirm(`Replace the list in this panel with “${l.name}” (${l.count} treatment${l.count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
-  const moved = await putListInPanel(l);
-  banner("ok", `Loaded “${esc(l.name)}”${moved ? ` (timetable switched to ${esc(moved)})` : ""}. Press Book next to start.`, 4000);
-}
 // replace the list in the panel with a saved one {name, location_id, items}; a list belongs to a location (its rooms)
 async function putListInPanel(l) {
   const L = S.list;
@@ -791,12 +762,6 @@ async function loadListFile() {
   const where = [...new Set(r.items.map(i => clinicName(i.location_id)))].join(" + ");
   banner(r.warnings.length ? "warn" : "ok", `Loaded “${esc(r.name)}” from ${esc(label)}${where ? ` (${esc(where)})` : ""}.` +
     (r.warnings.length ? `<ul>${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : " Press Book next to start."), r.warnings.length ? 0 : 4000);
-}
-async function deleteList(name) {
-  if (!name || !confirm(`Delete the saved list “${name}”?${S.stateless ? "" : "\n\nThis rewrites treatment_lists.json without it."}`)) return;
-  const r = await api("DELETE", `/api/lists?name=${encodeURIComponent(name)}`);
-  S.savedLists = r.lists; if (S.listName === name) S.listName = null; drawBookingPanel();
-  banner("ok", `Deleted the saved list “${esc(name)}”.`, 3000);
 }
 // name (or clear) who does a step of an existing booking; the server enforces the staff rules
 async function assignStaff(bookingId, step, staffId) {

@@ -153,8 +153,9 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   a booked row can be cancelled to try something else. An optional template fills in the name and times.
   A copy of **Book next** sits in the panel's header, which stays pinned (and the panel scrolls itself to the next row to
   fill in), so you can keep booking without scrolling.
-  **Save list… / Load / delete** keep named lists of the treatments in the panel (times, rooms, names, clients; not the bookings)
-  in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); each treatment in the list belongs to its own
+  The list of treatments in the panel is saved and loaded with **Save to file… / Load from file…** (below; times, rooms, names, clients, clinics; not the bookings).
+  (The older named-lists feature — `treatment_lists.json`, `/api/lists` — is still in the server but no longer has buttons in the page.)
+  each treatment in the list belongs to its own
   **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
   so one list can span clinics. Each treatment can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
   *cannot be performed* / *can be done* marker after a check; **Collapse all / Expand all** does the whole list. Collapsing is only a view setting: it isn't saved with lists. The list's own clinic is only the default for older lists/files that have no clinic per treatment. Loading a list replaces
@@ -179,7 +180,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   treatment-list file is accepted, and anything in it that no longer exists (a removed room, doctor, staff member, template) is dropped with a
   warning instead of refusing the file; a treatment whose clinic no longer exists is moved to the file's default clinic (with a warning).
   On the **Vercel deployment** the server can't see your folders, so it uses your browser's own *Save as* dialog (Chrome/Edge) or a download,
-  and your computer's file dialog to load. This is separate from the named lists above, which stay in `treatment_lists.json` (or the browser).
+  and your computer's file dialog to load. 
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
