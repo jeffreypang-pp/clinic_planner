@@ -109,6 +109,9 @@ class StatelessApp(App):
     def post_list_export(self, q, body):
         raise ClinicError(_NO_SERVER_DIRS)
 
+    def post_list_open(self, q, body):
+        raise ClinicError(_NO_SERVER_DIRS)
+
     def post_mkdir(self, q, body):
         raise ClinicError(_NO_SERVER_DIRS)
 

@@ -165,14 +165,17 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   Under the staff rows, **Total staff** shows how many staff the treatments need in each 15-minute block (grey = none,
   amber = every available staff member in use, red = a shortage). Name or change who does a step afterwards with the dropdown on a
   booked row (or in **Roster & bookings**). A staff member's own row only shows the steps that name them.
-  **Save to file… / Load from file…** (under *As a file*) put a list in a file **wherever you choose on your computer**, so you can keep it
-  anywhere, move it, or send it to someone. *Save to file…* asks for a name (it becomes the file name), then opens the same folder chooser
-  as Setup & save, then shows the full path (warning if a file of that name already exists and would be replaced) before writing
-  `<name>.json`; file names are made safe (no slashes, `..`, or names Windows rejects), and nothing is written outside the folder you
-  chose. On the **Vercel deployment** it uses your browser's own *Save as* dialog (Chrome/Edge) or downloads the file. *Load from file…*
-  opens your computer's file dialog; the list is validated like any other, and anything that no longer exists (a removed room, doctor, staff
-  member, template) is dropped with a warning instead of refusing the file; a list for another location switches to that location. This is
-  separate from the named lists above, which stay in `treatment_lists.json` (or the browser).
+  **Save to file… / Load from file…** (under *As a file*) put a list in a file **in any folder you choose on your computer**, so you can keep it
+  anywhere, move it, or send it to someone. Both use the same in-page dialog (click through folders, Up, Home / data folder / working
+  directory, type a path, show hidden, New folder…):
+  *Save to file…* opens **Save as**: browse to the folder, see the `.json` files already there (click one to replace it) and type the file
+  name, then **Save here**; the full path is shown (with a warning if the file already exists and would be replaced) before anything is written.
+  File names are made safe (no slashes, `..`, or names Windows rejects) and nothing is written outside the folder you chose.
+  *Load from file…* opens **Open**: browse to any folder, pick a `.json` file (treatment lists are tagged; double-click opens it). Only a real
+  treatment-list file is accepted, and anything in it that no longer exists (a removed room, doctor, staff member, template) is dropped with a
+  warning instead of refusing the file; a list for another location switches to that location.
+  On the **Vercel deployment** the server can't see your folders, so it uses your browser's own *Save as* dialog (Chrome/Edge) or a download,
+  and your computer's file dialog to load. This is separate from the named lists above, which stay in `treatment_lists.json` (or the browser).
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
@@ -207,7 +210,8 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 
 `GET /api/clinic` (merged view + the 3 groups + issues + unsaved/external files), `GET /api/status`, `GET /api/files` (the exact text of the three files),
 `POST /api/export` / `POST /api/import` (`directory`, optional `dry_run`; local server only: save a copy to / load from a directory),
-`GET /api/browse?path=[&hidden=1]` / `POST /api/mkdir` (`path`, `name`) (local server only: the folder chooser's listing and New folder),
+`GET /api/browse?path=[&hidden=1][&files=1]` / `POST /api/mkdir` (`path`, `name`) (local server only: the chooser's listing, with `.json` files for Save as / Open, and New folder),
+`POST /api/list-open` (`path`; local server only: read a treatment-list file),
 `POST /api/save` (`{"force": true}` to overwrite files changed on disk), `POST /api/discard`, `PUT /api/clinic` (`{"resources": {...}}` etc.;
 replaces the given groups in memory, validated together with the rest first),
 `GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,

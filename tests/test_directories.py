@@ -294,6 +294,94 @@ class BrowseTests(DirectoryTests):
     # (the inherited directory tests run again here: harmless, they use the same fixtures)
 
 
+class ListFilePickerTests(DirectoryTests):
+    """The Save-as / Open dialogs: list .json files (only), tag list files, open a list by path."""
+
+    ITEM = dict(name="Mine", numbing_minutes=15, doctor_minutes=30, staff_minutes=15, room_id="central_laser_b", start="12:00")
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp.name, "root")
+        os.makedirs(os.path.join(self.root, "sub"))
+        status, r = dispatch(self.app, "POST", "/api/list-export", {}, {"directory": self.root, "name": "Morning rush",
+                             "location_id": "central", "items": [self.ITEM]})
+        self.assertEqual(status, 200)
+        self.list_path = r["path"]
+        for name, text in (("other.json", '{"hello": 1}'), ("Notes.JSON", "{}"), ("readme.txt", "hi"), (".hidden.json", "{}"),
+                           ("store.json", '{"version": 1, "lists": {"a": {}}}')):
+            with open(os.path.join(self.root, name), "w") as f:
+                f.write(text)
+
+    def browse(self, files=True, hidden=False, path=None):
+        q = {"path": [path or self.root]}
+        if files:
+            q["files"] = ["1"]
+        if hidden:
+            q["hidden"] = ["1"]
+        return dispatch(self.app, "GET", "/api/browse", q, None)
+
+    def test_only_json_files_are_listed_and_only_when_asked(self):
+        status, r = self.browse()
+        self.assertEqual(status, 200)
+        self.assertEqual([f["name"] for f in r["files"]], ["Morning rush.json", "Notes.JSON", "other.json", "store.json"])
+        self.assertNotIn("readme.txt", [f["name"] for f in r["files"]])           # no other kind of file is ever listed
+        self.assertNotIn(".hidden.json", [f["name"] for f in r["files"]])
+        self.assertIn(".hidden.json", [f["name"] for f in self.browse(hidden=True)[1]["files"]])
+        self.assertEqual(self.browse(files=False)[1]["files"], [])                 # the folder chooser doesn't list files
+        self.assertEqual([e["name"] for e in r["entries"]], ["sub"])               # folders are still folders
+
+    def test_list_files_are_tagged_without_reading_anything_back(self):
+        status, r = self.browse()
+        tags = {f["name"]: f["list"] for f in r["files"]}
+        self.assertEqual(tags, {"Morning rush.json": True, "Notes.JSON": False, "other.json": False, "store.json": False})
+        self.assertTrue(all(isinstance(f["size"], int) for f in r["files"]))
+        self.assertNotIn("hello", json.dumps(r))                                    # file contents are never returned
+
+    def test_open_returns_the_validated_list_and_where_it_came_from(self):
+        status, r = dispatch(self.app, "POST", "/api/list-open", {}, {"path": self.list_path})
+        self.assertEqual(status, 200)
+        self.assertEqual((r["name"], r["location_id"], r["filename"], r["warnings"]), ("Morning rush", "central", "Morning rush.json", []))
+        self.assertEqual(r["items"][0]["name"], "Mine")
+        self.assertEqual((r["path"], r["directory"]), (os.path.realpath(self.list_path), os.path.realpath(self.root)))
+
+    def test_open_is_lenient_about_things_that_no_longer_exist(self):
+        data = json.load(open(self.list_path))
+        data["items"][0]["room_id"] = "gone"
+        stale = os.path.join(self.root, "stale.json")
+        json.dump(data, open(stale, "w"))
+        status, r = dispatch(self.app, "POST", "/api/list-open", {}, {"path": stale})
+        self.assertEqual((status, r["items"][0]["room_id"], len(r["warnings"])), (200, None, 1))
+
+    def test_open_refuses_anything_that_is_not_a_treatment_list(self):
+        def open_(name):
+            return dispatch(self.app, "POST", "/api/list-open", {}, {"path": os.path.join(self.root, name)})
+        for name, text in (("other.json", "isn't a treatment list"), ("store.json", "whole set of saved lists"),
+                           ("readme.txt", "isn't a .json file"), ("sub", "isn't a file"), ("nope.json", "isn't a file")):
+            status, r = open_(name)
+            self.assertEqual(status, 400, name)
+            self.assertIn(text, r["error"], name)
+            self.assertNotIn("hello", r["error"])                                   # the error never echoes file content
+        with open(os.path.join(self.root, "broken.json"), "w") as f:
+            f.write("{nope")
+        self.assertEqual(open_("broken.json")[0], 400)
+        with open(os.path.join(self.root, "binary.json"), "wb") as f:
+            f.write(b"\xff\xfe\x00bad")
+        self.assertEqual(open_("binary.json")[0], 400)
+        with open(os.path.join(self.root, "huge.json"), "w") as f:
+            f.write(" " * (App.MAX_LIST_FILE_BYTES + 1))
+        status, r = open_("huge.json")
+        self.assertEqual(status, 400)
+        self.assertIn("too large", r["error"])
+        self.assertEqual(dispatch(self.app, "POST", "/api/list-open", {}, {})[0], 400)
+        self.assertEqual(dispatch(self.app, "POST", "/api/list-open", {}, {"path": "bad\0path"})[0], 400)
+        self.assertEqual(dispatch(self.app, "POST", "/api/list-open", {}, {"path": "/etc/passwd"})[0], 400)   # not .json: never read
+
+    def test_opening_changes_nothing(self):
+        dispatch(self.app, "POST", "/api/list-open", {}, {"path": self.list_path})
+        self.assertEqual(Clinic.read_files(self.data), self.snapshot)
+        self.assertEqual(len(self.app.clinic.bookings), len(Clinic.load_dir(self.data).bookings))
+
+
 class ListExportTests(DirectoryTests):
     """Save one list as <directory>/<name>.json (local server)."""
 
@@ -381,6 +469,8 @@ class StatelessDirectoryTests(unittest.TestCase):
         self.assertFalse(os.path.exists(target))
         out = self.call("POST", "/api/list-file", {"name": "x", "location_id": "central", "items": [item]})
         self.assertEqual((out["status"], out["result"]["filename"]), (200, "x.json"))   # but the browser can get the file text
+        out = self.call("POST", "/api/list-open", {"path": os.path.join(self.dir, "resources.json")})
+        self.assertEqual(out["status"], 400)                                    # a server file is never read this way
         out = self.call("POST", "/api/mkdir", {"path": self.tmp.name, "name": "x"})
         self.assertEqual(out["status"], 400)
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "x")))

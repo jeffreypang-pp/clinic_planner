@@ -110,8 +110,10 @@ class App:
         """List the sub-folders of a directory so the page can offer a folder chooser.
 
         ``path`` (default: home); if it doesn't exist we show the nearest folder that does and say
-        so.  Only directories are listed (hidden ones with ``hidden=1``); each is flagged when it
-        already holds clinic data files.  Local server only: the server is on the user's computer."""
+        so.  Directories are listed (hidden ones with ``hidden=1``); each is flagged when it already
+        holds clinic data files.  With ``files=1`` the ``.json`` files in the folder are listed too
+        (name, size, and whether it is a treatment-list file), for the Save-as / Open dialogs; no
+        other kind of file is ever listed.  Local server only: the server is on the user's computer."""
         raw = (q.get("path", [""])[0] or "").strip()
         if "\0" in raw:
             raise ClinicError("Bad path")
@@ -122,16 +124,21 @@ class App:
             here = here.parent
         if here.is_file():
             here = here.parent
+        want_files = q.get("files", [""])[0] == "1"
         try:
             with os.scandir(here) as it:
-                subdirs = sorted((e for e in it if self._is_dir(e) and (show_hidden or not e.name.startswith("."))),
-                                 key=lambda e: e.name.lower())
+                found = [e for e in it if show_hidden or not e.name.startswith(".")]
         except OSError as e:
             raise ClinicError(f"Can't read {here}: {e.strerror or e}") from None
+        subdirs = sorted((e for e in found if self._is_dir(e)), key=lambda e: e.name.lower())
+        json_files = sorted((e for e in found if want_files and e.name.lower().endswith(".json") and self._is_file(e)),
+                            key=lambda e: e.name.lower())
         names = list(GROUP_FILES.values())
         entries = [{"name": e.name, "path": str(Path(e.path)),
                     "clinic": all(os.path.isfile(os.path.join(e.path, n)) for n in names)}
                    for e in subdirs[:self.MAX_BROWSE_ENTRIES]]
+        files = [{"name": e.name, "path": str(Path(e.path)), "size": self._size(e),
+                  "list": self._is_list_file(e.path)} for e in json_files[:self.MAX_BROWSE_ENTRIES]]
         shortcuts = [{"label": "Home", "path": str(Path.home())},
                      {"label": "Data folder", "path": str(Path(self.path).resolve())},
                      {"label": "Working directory", "path": str(Path.cwd())}]
@@ -142,13 +149,42 @@ class App:
                             "files": [n for n in names if (here / n).is_file()],
                             "writable": os.access(here, os.W_OK)},
                 "requested_missing": str(requested) if requested is not None and requested != here else None,
-                "entries": entries, "truncated": len(subdirs) > self.MAX_BROWSE_ENTRIES,
+                "entries": entries, "files": files,
+                "truncated": len(subdirs) > self.MAX_BROWSE_ENTRIES or len(json_files) > self.MAX_BROWSE_ENTRIES,
                 "shortcuts": shortcuts, "separator": os.sep}
 
     @staticmethod
     def _is_dir(entry) -> bool:
         try:
             return entry.is_dir()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _is_file(entry) -> bool:
+        try:
+            return entry.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _size(entry) -> int:
+        try:
+            return entry.stat().st_size
+        except OSError:
+            return 0
+
+    MAX_LIST_FILE_BYTES = 2_000_000
+
+    @classmethod
+    def _is_list_file(cls, path: str) -> bool:
+        """Cheap peek: does this ``.json`` file start like a treatment-list file?  (The kind marker is
+        written near the top; nothing is parsed or returned.)"""
+        try:
+            if os.path.getsize(path) > cls.MAX_LIST_FILE_BYTES:
+                return False
+            with open(path, "rb") as f:
+                return b'"kind": "clinic-treatment-list"' in f.read(2048)
         except OSError:
             return False
 
@@ -275,6 +311,33 @@ class App:
         return render_list_file(self.clinic, body.get("name"), _need(body, "location_id"), body.get("items"),
                                 bool((body or {}).get("lenient")))
 
+    def post_list_open(self, q, body):
+        """Read a list from a ``.json`` file the user picked (local server only; the browser-side path
+        is ``post_list_file``).  Only a real treatment-list file is accepted, and only its (validated,
+        lenient) list is returned, never raw content of other files."""
+        raw = str(_need(body, "path")).strip()
+        if "\0" in raw:
+            raise ClinicError("Bad path")
+        path = Path(os.path.expanduser(raw)).resolve()
+        if not path.is_file():
+            raise ClinicError(f"{path} isn't a file")
+        if path.suffix.lower() != ".json":
+            raise ClinicError(f"{path.name} isn't a .json file")
+        if path.stat().st_size > self.MAX_LIST_FILE_BYTES:
+            raise ClinicError(f"{path.name} is too large to be a treatment list")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ClinicError(f"{path.name} isn't valid JSON: {e}") from None
+        if isinstance(data, dict) and "lists" in data and "items" not in data:
+            raise ClinicError(f"{path.name} holds a whole set of saved lists (treatment_lists.json), not one list "
+                              "file. Use the dropdown to load one of those.")
+        if not isinstance(data, dict) or data.get("kind") != "clinic-treatment-list" or not isinstance(data.get("items"), list):
+            raise ClinicError(f"{path.name} isn't a treatment list file (the kind made by \"Save to file…\")")
+        r = render_list_file(self.clinic, data.get("name") or path.stem, data.get("location_id"), data["items"], True)
+        return {**{k: r[k] for k in ("name", "location_id", "items", "warnings")},
+                "path": str(path), "filename": path.name, "directory": str(path.parent)}
+
     def post_list_export(self, q, body):
         """Write one list as ``<directory>/<name>.json`` (local server only; the browser-side path is
         ``post_list_file``).  Refuses (409) to replace an existing file unless ``overwrite``;
@@ -393,6 +456,7 @@ ROUTES = [
     ("POST", r"/api/book-list", "post_book_list"),
     ("POST", r"/api/list-file", "post_list_file"),
     ("POST", r"/api/list-export", "post_list_export"),
+    ("POST", r"/api/list-open", "post_list_open"),
     ("GET", r"/api/lists", "get_lists"),
     ("PUT", r"/api/lists", "put_list"),
     ("DELETE", r"/api/lists", "delete_list"),

@@ -148,10 +148,19 @@
   #dirpick h3 { margin: 0; }
   #dirpick .dp-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   #dirpick .dp-bar input { flex: 1; min-width: 200px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  #dirpick #dp-note { min-height: 2.6em; }   /* a fixed height, so changing the note never shifts the list under the pointer */
   #dirpick .dp-list { flex: 1; min-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
   #dirpick .dp-item { display: flex; width: 100%; align-items: center; gap: 8px; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 7px 10px; cursor: pointer; font-size: 14px; }
   #dirpick .dp-item:hover, #dirpick .dp-item:focus-visible { background: var(--bg); }
   #dirpick .dp-item .tag { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-weight: 600; }
+  #dirpick .dp-item.file { padding-left: 14px; }
+  #dirpick .dp-item.dim { color: var(--muted); }
+  #dirpick .dp-item.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+  #dirpick .dp-item .size { margin-left: auto; font-size: 11px; color: var(--muted); }
+  #dirpick .dp-item .tag + .size { margin-left: 8px; }
+  #dirpick .dp-fname { display: flex; gap: 8px; align-items: center; }
+  #dirpick .dp-fname[hidden] { display: none; }
+  #dirpick .dp-fname input { flex: 1; }
   #dirpick .dp-item.new { color: var(--accent); font-weight: 600; }
   #dirpick .dp-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #dirpick .dp-actions .spacer { flex: 1; }
@@ -185,13 +194,14 @@
 </div>
 <div id="dirpick" hidden role="dialog" aria-modal="true" aria-label="Choose a directory">
   <div class="box">
-    <h3>Choose a directory</h3>
+    <h3 id="dp-title">Choose a directory</h3>
     <div class="dp-bar" id="dp-shortcuts"></div>
     <div class="dp-bar"><button class="btn secondary" id="dp-up" title="Go up one folder">↑ Up</button>
       <input id="dp-input" spellcheck="false" autocomplete="off" title="Type a path and press Enter to go there"></div>
     <div class="muted" id="dp-note"></div>
     <div class="dp-list" id="dp-list"></div>
-    <div class="dp-actions"><label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)"><input type="checkbox" id="dp-hidden"> show hidden folders</label>
+    <div class="dp-fname" id="dp-filerow" hidden><label for="dp-filename" style="font-size:13px;color:var(--text)">File name</label><input id="dp-filename" spellcheck="false" autocomplete="off"></div>
+    <div class="dp-actions"><label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)"><input type="checkbox" id="dp-hidden"> show hidden</label>
       <button class="btn secondary" id="dp-new">New folder…</button><span class="spacer"></span>
       <button class="btn secondary" id="dp-cancel">Cancel</button><button class="btn" id="dp-ok">Choose this folder</button></div>
   </div>
@@ -699,12 +709,17 @@ const listBody = name => ({ name, location_id: S.location, items: S.list.items.m
 async function saveListFile() {
   const L = S.list, t = S.tt, n = L.items.length;
   if (!n) throw new Error("The list is empty: add a treatment first.");
-  const name = (prompt(`Name for this list (it becomes the file name).\n${n} treatment${n === 1 ? "" : "s"} at ${t.location}:`, S.listName || "") || "").trim();
-  if (!name) return;
-  if (S.stateless) return saveListFileInBrowser(name);
-  const dir = await openDirPicker(recentDirs()[0] || ""); if (!dir) return;       // choose the folder on this computer
-  rememberDir(dir);
-  const body = { ...listBody(name), directory: dir };
+  if (S.stateless) {   // deployed: the browser's own Save-as dialog (it lets you choose the folder) or a download
+    const name = (prompt(`Name for this list (it becomes the file name).\n${n} treatment${n === 1 ? "" : "s"} at ${t.location}:`, S.listName || "") || "").trim();
+    return name ? saveListFileInBrowser(name) : undefined;
+  }
+  // local: a "Save as" dialog: pick the folder anywhere on this computer and type the file name
+  const pick = await openPicker({ mode: "save", start: recentDirs()[0] || "", filename: `${S.listName || "Treatment list"}.json`,
+                                  title: `Save this list (${n} treatment${n === 1 ? "" : "s"} at ${t.location}) as…` });
+  if (!pick) return;
+  rememberDir(pick.directory);
+  const name = pick.filename.replace(/\.json$/i, "").trim() || "Treatment list";
+  const body = { ...listBody(name), directory: pick.directory, filename: pick.filename };
   const info = await api("POST", "/api/list-export", { ...body, dry_run: true });
   if (!confirm(`Save this list as a file?\n\n  ${info.path}\n\n${n} treatment${n === 1 ? "" : "s"} at ${t.location}: times, rooms, names, clients (not the bookings).\n` +
       `${info.exists ? "\nA file with this name ALREADY EXISTS there and will be REPLACED.\n" : ""}${info.directory_exists ? "" : "\nThe folder doesn't exist yet and will be created.\n"}\nNothing else is changed.`)) return;
@@ -731,17 +746,26 @@ function pickJsonFile() {
   });
 }
 async function loadListFile() {
-  const f = await pickJsonFile(); if (!f) return;
-  let data; try { data = JSON.parse(await f.text()); } catch (e) { throw new Error(`${f.name} isn't valid JSON: ${e.message}`); }
-  if (data && data.lists && !data.items) throw new Error(`${f.name} holds a whole set of saved lists (treatment_lists.json), not one list file. Use the dropdown above to load one of those.`);
-  if (!data || data.kind !== "clinic-treatment-list" || !Array.isArray(data.items)) throw new Error(`${f.name} isn't a treatment list file (the kind made by “Save to file…”).`);
-  const r = await api("POST", "/api/list-file", { name: data.name || f.name.replace(/\.json$/i, ""), location_id: data.location_id, items: data.items, lenient: true });
+  let r, label;
+  if (S.stateless) {   // deployed: the computer's own file dialog (the server can't see your folders)
+    const f = await pickJsonFile(); if (!f) return;
+    let data; try { data = JSON.parse(await f.text()); } catch (e) { throw new Error(`${f.name} isn't valid JSON: ${e.message}`); }
+    if (data && data.lists && !data.items) throw new Error(`${f.name} holds a whole set of saved lists (treatment_lists.json), not one list file. Use the dropdown above to load one of those.`);
+    if (!data || data.kind !== "clinic-treatment-list" || !Array.isArray(data.items)) throw new Error(`${f.name} isn't a treatment list file (the kind made by “Save to file…”).`);
+    r = await api("POST", "/api/list-file", { name: data.name || f.name.replace(/\.json$/i, ""), location_id: data.location_id, items: data.items, lenient: true });
+    label = f.name;
+  } else {             // local: an "Open" dialog: browse to any folder on this computer and pick the file
+    const path = await openPicker({ mode: "open", start: recentDirs()[0] || "", title: "Open a treatment list file" });
+    if (!path) return;
+    r = await api("POST", "/api/list-open", { path });
+    rememberDir(r.directory); label = r.filename;
+  }
   const L = S.list, count = r.items.length;
   if (L.items.some(i => i.status === "booked" || i.touched) &&
-      !confirm(`Replace the list in this panel with “${r.name}” from ${f.name} (${count} treatment${count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
+      !confirm(`Replace the list in this panel with “${r.name}” from ${label} (${count} treatment${count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
   await putListInPanel({ name: r.name, location_id: r.location_id, items: r.items });
   const loc = byId(locs(), r.location_id);
-  banner(r.warnings.length ? "warn" : "ok", `Loaded “${esc(r.name)}” from ${esc(f.name)}${loc ? ` (${esc(loc.name)})` : ""}.` +
+  banner(r.warnings.length ? "warn" : "ok", `Loaded “${esc(r.name)}” from ${esc(label)}${loc ? ` (${esc(loc.name)})` : ""}.` +
     (r.warnings.length ? `<ul>${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : " Press Book next to start."), r.warnings.length ? 0 : 4000);
 }
 async function deleteList(name) {
@@ -1013,50 +1037,78 @@ function typedDirectory() {
   return dir;
 }
 
-// The folder chooser: the server (which runs on this computer) lists folders; resolves with the chosen absolute path, or null.
-function openDirPicker(start) {
+// The chooser dialog: the server (which runs on this computer) lists folders and .json files.
+//   mode "folder": choose a folder             -> resolves with its path
+//   mode "save":   "Save as" (folder + name)   -> { directory, filename }
+//   mode "open":   pick an existing .json file -> its path
+// Resolves with null if cancelled.
+function openPicker({ mode = "folder", start = "", filename = "", title = "" } = {}) {
   return new Promise(resolve => {
-    const el = $("#dirpick"), list = $("#dp-list");
-    let here = null, hidden = false, requestedMissing = null;
+    const el = $("#dirpick"), list = $("#dp-list"), withFiles = mode !== "folder";
+    let here = null, hidden = false, selected = null;
     const finish = value => { el.hidden = true; document.removeEventListener("keydown", onKey); resolve(value); };
     const onKey = e => { if (e.key === "Escape") finish(null); };
+    const kb = n => n < 1024 ? `${n} B` : `${Math.round(n / 1024)} KB`;
+    const accept = () => {
+      if (!here) return;
+      if (mode === "folder") return finish(here.path);
+      if (mode === "save") { const name = $("#dp-filename").value.trim(); if (!name) { $("#dp-note").textContent = "Type a file name."; return; } return finish({ directory: here.path, filename: name }); }
+      if (!selected) { $("#dp-note").textContent = "Click a file to select it first."; return; }
+      finish(selected);
+    };
     async function go(path) {
       try {
-        const d = await api("GET", `/api/browse?path=${encodeURIComponent(path || "")}${hidden ? "&hidden=1" : ""}`);
-        here = d.current; requestedMissing = d.requested_missing;
+        const d = await api("GET", `/api/browse?path=${encodeURIComponent(path || "")}${hidden ? "&hidden=1" : ""}${withFiles ? "&files=1" : ""}`);
+        here = d.current; selected = null;
+        const missing = d.requested_missing;
         $("#dp-input").value = here.path; $("#dp-up").disabled = !here.parent;
         $("#dp-shortcuts").innerHTML = d.shortcuts.map(x => `<button class="btn secondary" data-go="${esc(x.path)}" title="${esc(x.path)}">${esc(x.label)}</button>`).join("");
-        $("#dp-note").textContent = requestedMissing ? `“${requestedMissing}” doesn't exist yet. Showing the nearest folder that does.`
-          : here.files.length ? `This folder has ${here.files.join(", ")}.` : "No clinic files in this folder.";
-        $("#dp-note").style.color = requestedMissing ? "var(--bad)" : "";
-        $("#dp-ok").textContent = "Choose this folder";
-        list.innerHTML = (requestedMissing ? `<button class="dp-item new" data-pick="${esc(requestedMissing)}">＋ Use “${esc(requestedMissing)}” (will be created when you save)</button>` : "") +
-          (d.entries.length ? d.entries.map(x => `<button class="dp-item" data-go="${esc(x.path)}">📁 ${esc(x.name)}${x.clinic ? `<span class="tag">clinic data</span>` : ""}</button>`).join("")
-                            : `<div class="muted" style="padding:12px">No sub-folders here.</div>`) +
-          (d.truncated ? `<div class="muted" style="padding:8px 10px">Only the first ${d.entries.length} folders are shown; type a path above to go further.</div>` : "");
+        $("#dp-note").textContent = missing ? `“${missing}” doesn't exist yet. Showing the nearest folder that does.`
+          : mode === "folder" ? (here.files.length ? `This folder has ${here.files.join(", ")}.` : "No clinic files in this folder.")
+          : mode === "save" ? (d.files.length ? "The .json files already here are listed; click one to replace it." : "No .json files in this folder yet.")
+          : (d.files.length ? "Click a treatment list file, then Open (or double-click it)." : "No .json files in this folder.");
+        $("#dp-note").style.color = missing ? "var(--bad)" : "";
+        $("#dp-ok").textContent = mode === "save" ? "Save here" : mode === "open" ? "Open" : "Choose this folder";
+        const files = d.files.map(f => `<button class="dp-item file ${f.list || mode === "save" ? "" : "dim"}" data-file="${esc(f.path)}" data-name="${esc(f.name)}">📄 ${esc(f.name)}${f.list ? `<span class="tag">treatment list</span>` : ""}<span class="size">${kb(f.size)}</span></button>`).join("");
+        list.innerHTML = (missing && mode === "folder" ? `<button class="dp-item new" data-pick="${esc(missing)}">＋ Use “${esc(missing)}” (will be created when you save)</button>` : "") +
+          d.entries.map(x => `<button class="dp-item" data-go="${esc(x.path)}">📁 ${esc(x.name)}${x.clinic ? `<span class="tag">clinic data</span>` : ""}</button>`).join("") + files +
+          (!d.entries.length && !d.files.length ? `<div class="muted" style="padding:12px">${withFiles ? "No sub-folders or .json files here." : "No sub-folders here."}</div>` : "") +
+          (d.truncated ? `<div class="muted" style="padding:8px 10px">Only the first ${d.entries.length} folders / files are shown; type a path above to go further.</div>` : "");
         list.scrollTop = 0;
       } catch (e) { fail(e); }
     }
     el.onclick = e => { if (e.target === el) finish(null); };
     $("#dp-shortcuts").onclick = list.onclick = e => {
       const b = e.target.closest("button"); if (!b) return;
-      if (b.dataset.pick) finish(b.dataset.pick); else if (b.dataset.go) go(b.dataset.go);
+      if (b.dataset.pick) finish(b.dataset.pick);
+      else if (b.dataset.go) go(b.dataset.go);
+      else if (b.dataset.file) {
+        if (mode === "save") $("#dp-filename").value = b.dataset.name;
+        else { selected = b.dataset.file; list.querySelectorAll(".dp-item.sel").forEach(x => x.classList.remove("sel")); b.classList.add("sel"); $("#dp-note").textContent = `Selected: ${b.dataset.name}`; $("#dp-note").style.color = ""; }
+      }
     };
+    list.ondblclick = () => { if (mode === "open" && selected) accept(); };   // the first click already selected the file
     $("#dp-up").onclick = () => here?.parent && go(here.parent);
     $("#dp-input").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); go($("#dp-input").value); } };
+    $("#dp-filename").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); accept(); } };
     $("#dp-hidden").onchange = e => { hidden = e.target.checked; go(here?.path); };
     $("#dp-cancel").onclick = () => finish(null);
-    $("#dp-ok").onclick = () => finish(here?.path || null);
+    $("#dp-ok").onclick = accept;
     $("#dp-new").onclick = () => guard(async () => {
       const name = prompt(`Name for the new folder inside\n${here.path}`); if (!name || !name.trim()) return;
       const r = await api("POST", "/api/mkdir", { path: here.path, name }); await go(r.path);
     });
+    $("#dp-title").textContent = title || (mode === "save" ? "Save as…" : mode === "open" ? "Open a file" : "Choose a directory");
+    $("#dp-filerow").hidden = mode !== "save"; $("#dp-filename").value = filename;
     $("#dp-hidden").checked = false; el.hidden = false; document.addEventListener("keydown", onKey);
     $("#dp-input").value = ""; $("#dp-note").textContent = ""; $("#dp-shortcuts").innerHTML = "";      // don't flash the last visit's folder
     list.innerHTML = `<div class="muted" style="padding:12px">Loading…</div>`;
     go(start);
+    if (mode === "save") setTimeout(() => { $("#dp-filename").focus(); $("#dp-filename").select(); }, 0);
   });
 }
+const openDirPicker = start => openPicker({ mode: "folder", start });
+
 async function saveToDirectory(dirArg) {
   const dir = dirArg ?? typedDirectory();
   const info = await api("POST", "/api/export", { directory: dir, dry_run: true });
