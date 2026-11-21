@@ -41,6 +41,7 @@
   #savebar .state.ext { background: var(--bad-bg); color: var(--bad); }
   #savebar .btn { padding: 4px 12px; }
   label { color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
+  label[hidden] { display: none; }
   input, select, textarea, button { font: inherit; color: var(--text); }
   input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
   button.btn { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 6px;
@@ -182,7 +183,7 @@
   <span class="spacer"></span>
   <div id="savebar"></div>
   <button class="btn secondary" id="logout" hidden title="Log out of the app">Log out</button>
-  <label>Date <input type="date" id="date"></label>
+  <label id="date-wrap" hidden>Date <input type="date" id="date"></label>   <!-- only the Roster tab needs it up here; the Timetable has its own beside Location -->
 </header>
 <div id="login" hidden>
   <form id="login-form" autocomplete="on">
@@ -423,7 +424,7 @@ $("#nav").onclick = e => { const t = e.target.dataset.tab; if (t) { S.tab = t; s
 $("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
 
 async function render() {
-  renderNav(); $("#date").value = S.date; $("#main").classList.toggle("wide", S.tab === "timetable");
+  renderNav(); $("#date").value = S.date; $("#date-wrap").hidden = S.tab !== "roster"; $("#main").classList.toggle("wide", S.tab === "timetable");
   await guard(async () => { await ({timetable: viewTimetable,
                                     roster: viewRoster, setup: viewSetup})[S.tab](); });
 }
@@ -481,6 +482,7 @@ async function viewTimetable() {
   $("#main").innerHTML = `<div class="tt-layout"><div class="tt-main">
     <div class="row">
       <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
+      <label>Date <input type="date" id="tt-date" value="${esc(S.date)}"></label>
       <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
       <button class="btn danger" id="clear-day" title="Remove all bookings and blocked times for ${esc(t.location)} on ${esc(S.date)}">Clear day…</button>
       <button class="btn secondary" id="save-dir" title="Save a copy of the clinic data (including the bookings on this timetable) into a folder you choose">Save to directory…</button>
@@ -501,6 +503,7 @@ async function viewTimetable() {
     <div id="editbar" class="card" ${S.editAvail ? "" : "hidden"}></div>
     </div><aside id="book-panel" class="card book-panel"></aside></div>`;
   $("#loc").onchange = e => { S.location = e.target.value; render(); };
+  $("#tt-date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
   $("#save-dir").onclick = () => guard(saveCopyFromHere);
@@ -626,7 +629,7 @@ function drawBookingPanel() {
         <label title="Doctor treatment: a doctor + 1 staff">Doctor (min)<select data-f="doctor">${minOpts(it.doctor)}</select></label>
         <label title="Staff treatment: 1 staff">Staff (min)<select data-f="staff">${minOpts(it.staff)}</select></label></div>
       <div class="bk-edit">${multi ? `<label class="grow" title="The clinic this treatment is at: its rooms, ticked-in staff and opening hours are used">Clinic<select data-f="loc">${locs().map(l => `<option value="${l.id}" ${l.id === it.loc ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>` : ""}
-        <label class="grow" title="The day this treatment is booked for. It follows the date at the top until you pick one here; clear it to follow the top date again.">Date<input type="date" data-f="date" value="${esc(it.date)}"></label></div>
+        <label class="grow" title="The day this treatment is booked for. It follows the timetable's date until you pick one here; clear it to follow that date again.">Date<input type="date" data-f="date" value="${esc(it.date)}"></label></div>
       <div class="bk-edit"><label class="grow">Room<select data-f="room">${rooms.length ? rooms.map(r => `<option value="${r.id}" ${r.id === it.room ? "selected" : ""}>${esc(r.name)}</option>`).join("") : `<option value="">(no rooms at ${esc(clinicName(it.loc))})</option>`}</select></label>
         ${+it.doctor > 0 ? `<label class="grow">Doctor<select data-f="doctorId"><option value="">any available</option>${S.clinic.doctors.map(d => `<option value="${d.id}" ${d.id === it.doctorId ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>` : ""}</div>
       ${activeSteps(it).length ? `<div class="bk-mins" style="grid-template-columns: repeat(${activeSteps(it).length}, 1fr)">${activeSteps(it).map(k => `

@@ -140,7 +140,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 
 ## UI tabs
 
-* **Timetable** - per location and date, one row per doctor / staff / room, one cell per 15 min (the cells stretch to fill the window's width, so a normal day fits without scrolling sideways; the grid only scrolls if the day is too long for 14px cells)
+* **Timetable** - per location and date (the date is chosen right beside the *Location* menu), one row per doctor / staff / room, one cell per 15 min (the cells stretch to fill the window's width, so a normal day fits without scrolling sideways; the grid only scrolls if the day is too long for 14px cells)
   (free, booked per step, away at another location, not in any location today, closed, blocked).
   **This is where you book.** The **Add treatments** panel beside the grid takes treatments one at a time: for each, set the
   numbing / doctor / staff minutes (numbing locks to 0 when the doctor time is 0), the room and the start time (or click a free cell
@@ -153,7 +153,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   The list of treatments in the panel is saved and loaded with **Save to file… / Load from file…** (below; times, rooms, names, clients, clinics; not the bookings).
   each treatment in the list belongs to its own
   **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
-  and a *Date* (each treatment is booked for its own day; it follows the date at the top until you pick one, clear the field to follow it again; a saved list/file keeps a date only if you picked one),
+  and a *Date* (each treatment is booked for its own day; it follows the timetable's date until you pick one, clear the field to follow it again; a saved list/file keeps a date only if you picked one),
   so one list can span clinics. Each treatment, booked or not, can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
   *cannot be performed* / *can be done* marker after a check; **Collapse all / Expand all** and **Clear list** sit at the top of the panel, under the file buttons. Collapsing is only a view setting: it isn't saved with lists. The list's own clinic is only the default for older lists/files that have no clinic per treatment. Loading a list replaces
   the list in the panel (bookings already made stay) and switches the grid to the first treatment's clinic; treatments at other clinics are shown in the panel
