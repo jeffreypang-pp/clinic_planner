@@ -116,6 +116,9 @@
   .bk-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
   .bk-row.ok { border-color: var(--free-line); background: color-mix(in srgb, var(--free) 35%, transparent); }
   .bk-row.bad { border-color: var(--bad); }
+  .bk-fold { display: flex; gap: 6px; align-items: center; }
+  .tog, .tog:hover { padding: 0 4px; font-size: 13px; text-decoration: none; color: var(--muted); }
+  .bk-fold .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bk-edit { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
   .bk-edit select, .bk-edit input { flex: 1; min-width: 0; }
   .bk-edit .n { color: var(--muted); width: 18px; }
@@ -604,8 +607,14 @@ function drawBookingPanel() {
     const preview = !p ? "" : p.status === "booked" ? `<span class="pill yes">can be done</span><div class="muted">${detail(p.booking)}</div>`
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
       : `<span class="muted">not attempted</span>`;
+    const title = (it.name || "").trim() || rooms.find(r => r.id === it.room)?.name || "treatment";
+    if (it.collapsed) return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
+      <div class="bk-fold"><button class="link tog" data-toggle="${i}" title="Show the details of this treatment">▸</button>
+        <span class="ttl" title="${esc(title)} · ${esc(clinicName(it.loc))}"><b>${i + 1}. ${esc(title)}</b> <span class="muted">· ${esc(clinicName(it.loc))}</span></span>
+        ${it.status === "failed" || p?.status === "failed" ? `<span class="pill no">cannot be performed</span>` : p?.status === "booked" ? `<span class="pill yes">can be done</span>` : ""}
+        <button class="link" data-rm="${i}">remove</button></div></div>`;
     return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
-      <div class="bk-edit"><span class="n">${i + 1}.</span><input data-f="name" placeholder="${esc(rooms.find(r => r.id === it.room)?.name || "treatment name")}" title="Treatment name. Leave empty to use the room's name." value="${esc(it.name)}">
+      <div class="bk-edit"><button class="link tog" data-toggle="${i}" title="Collapse: show only the treatment and clinic">▾</button><span class="n">${i + 1}.</span><input data-f="name" placeholder="${esc(rooms.find(r => r.id === it.room)?.name || "treatment name")}" title="Treatment name. Leave empty to use the room's name." value="${esc(it.name)}">
         <label title="Proposed start time: only times inside the opening hours at which the treatment still ends by closing time">Start${startSelectHtml(sr, it.start, 'data-f="start"')}</label></div>
       ${presets.length ? `<div class="bk-edit"><select data-f="preset" title="Optional: fills in the name and the three times. Its doctor skills and room equipment are then enforced."><option value="">Template (optional): custom treatment</option>${presets.map(x => `<option value="${x.id}" ${x.id === it.preset ? "selected" : ""}>${esc(x.name)} (${totalMin(x)} min)</option>`).join("")}</select></div>` : ""}
       <div class="bk-mins">
@@ -645,6 +654,7 @@ function drawBookingPanel() {
       <button class="btn secondary" id="bk-all" title="Go down the list in order; stops at the first treatment that can't be carried out">Book all</button>
       <button class="btn secondary" id="bk-check" title="Dry run: shows what would happen, books nothing">Check all</button>
       <button class="btn secondary" id="bk-add">+ Add</button>
+      <button class="btn secondary" id="bk-fold" title="Collapse every treatment to one line, or expand them all again">${L.items.filter(i => i.status !== "booked").every(i => i.collapsed) ? "Expand all" : "Collapse all"}</button>
       <button class="btn secondary" id="bk-clear" title="Empties this list; bookings already made stay in the schedule">Clear list</button></div>
     ${L.summary ? `<div style="margin-top:10px">${L.summary}</div>` : ""}`;
   panel.oninput = e => { const row = e.target.closest("[data-i]"), f = e.target.dataset.f;
@@ -661,6 +671,8 @@ function drawBookingPanel() {
     it.touched = true; resetItem(it); drawBookingPanel(); };
   panel.onclick = e => { const el = e.target;
     if (el.id === "bk-add") { L.items.push(newItem(L.items[L.items.length - 1])); drawBookingPanel(); }
+    else if (el.dataset.toggle !== undefined) { const it = L.items[+el.dataset.toggle]; it.collapsed = !it.collapsed; drawBookingPanel(); }
+    else if (el.id === "bk-fold") { const open = L.items.filter(i => i.status !== "booked"), all = open.every(i => i.collapsed); open.forEach(i => i.collapsed = !all); drawBookingPanel(); }
     else if (el.dataset.rm !== undefined) { L.items.splice(+el.dataset.rm, 1); L.summary = ""; drawBookingPanel(); }
     else if (el.id === "bk-clear") { L.items = []; L.summary = ""; L.last = null; viewTimetable(); }
     else if (el.dataset.cancel !== undefined) guard(() => cancelBooked(+el.dataset.cancel));
