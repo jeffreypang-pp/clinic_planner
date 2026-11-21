@@ -116,7 +116,7 @@
   .bk-row.ok { border-color: var(--free-line); background: color-mix(in srgb, var(--free) 35%, transparent); }
   .bk-row.bad { border-color: var(--bad); }
   .bk-fold { display: flex; gap: 6px; align-items: center; }
-  .tog, .tog:hover { padding: 0 4px; font-size: 13px; text-decoration: none; color: var(--muted); }
+  button.tog, button.tog:hover { padding: 0 4px; font-size: 13px; text-decoration: none; color: var(--muted); }
   .bk-fold .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bk-edit { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
   .bk-edit select, .bk-edit input { flex: 1; min-width: 0; }
@@ -635,7 +635,10 @@ function drawBookingPanel() {
       <button class="btn" id="bk-next-top" title="Book the first treatment in the list that isn't booked yet">Book next</button></div>
     <div class="bk-lists"><span class="muted">As a file:</span>
       <button class="btn secondary" id="lf-save" title="Save this list as a file in a folder you choose on your computer">Save to file…</button>
-      <button class="btn secondary" id="lf-load" title="Load a list from a file on your computer">Load from file…</button></div>
+      <button class="btn secondary" id="lf-load" title="Load a list from a file on your computer">Load from file…</button>
+      <span style="flex:1"></span>
+      <button class="btn secondary" id="bk-fold" title="Collapse every treatment to one line, or expand them all again">${L.items.filter(i => i.status !== "booked").every(i => i.collapsed) ? "Expand all" : "Collapse all"}</button>
+      <button class="btn secondary" id="bk-clear" title="Empties this list; bookings already made stay in the schedule">Clear list</button></div>
     <details style="margin-bottom:8px"><summary class="muted" style="cursor:pointer">How this works</summary>
       <div class="muted" style="margin-top:4px">Give the numbing, doctor treatment and staff treatment times and the room, then press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
       The doctor is chosen automatically (or pick one). Staff are interchangeable: leave a step on <b>assign later</b> (it still counts as one staff member in the <b>Total staff</b> row) or name someone, and name them afterwards from the booked row.
@@ -647,9 +650,7 @@ function drawBookingPanel() {
       <button class="btn" id="bk-next" title="Book the first treatment in the list that isn't booked yet">Book next</button>
       <button class="btn secondary" id="bk-all" title="Go down the list in order; stops at the first treatment that can't be carried out">Book all</button>
       <button class="btn secondary" id="bk-check" title="Dry run: shows what would happen, books nothing">Check all</button>
-      <button class="btn secondary" id="bk-add">+ Add</button>
-      <button class="btn secondary" id="bk-fold" title="Collapse every treatment to one line, or expand them all again">${L.items.filter(i => i.status !== "booked").every(i => i.collapsed) ? "Expand all" : "Collapse all"}</button>
-      <button class="btn secondary" id="bk-clear" title="Empties this list; bookings already made stay in the schedule">Clear list</button></div>
+      <button class="btn secondary" id="bk-add">+ Add</button></div>
     ${L.summary ? `<div style="margin-top:10px">${L.summary}</div>` : ""}`;
   panel.oninput = e => { const row = e.target.closest("[data-i]"), f = e.target.dataset.f;
     if (row && (f === "client" || f === "name")) { const it = L.items[+row.dataset.i]; it[f] = e.target.value; it.touched = true; } };
