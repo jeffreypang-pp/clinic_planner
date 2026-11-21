@@ -787,6 +787,23 @@ class BookListTests(unittest.TestCase):
         r = self.run_list([dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="ghost", start="09:00")])
         self.assertEqual((r["results"][0]["status"], r["results"][0]["treatment"]), ("failed", "Treatment"))   # unknown room: neutral label
 
+    def test_a_list_can_book_treatments_at_different_clinics(self):
+        tick(self.c, "doctor", "d2", "b")
+        tick(self.c, "staff", "s1", "b")                       # B gets its own people (s1 leaves A; s2 stays)
+        base = dict(numbing_minutes=0, doctor_minutes=30, staff_minutes=0)
+        r = self.c.book_list("a", MON, [dict(base, room_id="a_plain", start="10:00", location_id="a"),
+                                        dict(base, room_id="b_plain", start="11:00", location_id="b"),    # another clinic
+                                        dict(base, room_id="a_laser", start="12:00")])                   # the list's default
+        self.assertEqual([x["status"] for x in r["results"]], ["booked"] * 3)
+        self.assertEqual([x["booking"]["location_id"] for x in r["results"]], ["a", "b", "a"])
+        self.assertEqual({b.location_id for b in self.c.bookings.values()}, {"a", "b"})
+        # each treatment is checked against its OWN clinic: a room of A can't be used at B, and the list stops there
+        r = self.c.book_list("a", MON, [dict(base, room_id="a_plain", start="14:00"),
+                                        dict(base, room_id="a_plain", start="15:00", location_id="b"),
+                                        dict(base, room_id="a_plain", start="16:00")])
+        self.assertEqual([x["status"] for x in r["results"]], ["booked", "failed", "not_attempted"])
+        self.assertTrue(any("not at B" in m for m in r["results"][1]["reasons"]))
+
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},
                            dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain",

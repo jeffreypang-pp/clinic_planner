@@ -58,10 +58,15 @@ class TreatmentLists:
         """Every saved list (sorted by name), each with its items."""
         out = []
         for name, entry in sorted(self._read().items(), key=lambda kv: kv[0].lower()):
-            loc = clinic.locations.get(entry.get("location_id"))
-            out.append({"name": name, "location_id": entry.get("location_id"),
-                        "location": loc.name if loc else None, "saved": entry.get("saved"),
-                        "count": len(entry.get("items", [])), "items": entry.get("items", [])})
+            default = entry.get("location_id")
+            loc = clinic.locations.get(default)
+            # older lists had one clinic for the whole list: give each item its clinic explicitly
+            items = [dict(i, location_id=i.get("location_id") or default) if isinstance(i, dict) else i
+                     for i in entry.get("items", [])]
+            used = list(dict.fromkeys(i.get("location_id") for i in items if isinstance(i, dict)))
+            out.append({"name": name, "location_id": default, "location": loc.name if loc else None,
+                        "locations": [clinic.locations[l].name if l in clinic.locations else "(removed clinic)" for l in used],
+                        "saved": entry.get("saved"), "count": len(items), "items": items})
         return out
 
     def save(self, clinic: Clinic, name, location_id, items, overwrite: bool = False) -> dict:
@@ -88,9 +93,12 @@ class TreatmentLists:
                    warnings: list | None = None) -> dict:
         """Check one item (``n`` = its 1-based position) and return it in canonical form.
 
-        ``lenient`` (used when loading a file): ids that no longer exist (room, doctor, staff,
-        template) are dropped with a warning instead of being an error; the times and start are
-        always checked."""
+        Each item belongs to a clinic (``location_id``); an item without one belongs to the list's
+        clinic (``location_id`` argument), which is how older lists and files load.
+
+        ``lenient`` (used when loading a file): ids that no longer exist (clinic, room, doctor,
+        staff, template) are dropped with a warning instead of being an error; the times and start
+        are always checked."""
         what = f"Treatment {n}"
         warnings = warnings if warnings is not None else []
         if not isinstance(item, dict):
@@ -112,12 +120,21 @@ class TreatmentLists:
         start = item.get("start")
         if not start:
             raise ClinicError(f"{what}: missing 'start'")
+        item_loc = item.get("location_id") or location_id
+        if item_loc not in clinic.locations:
+            if not lenient:
+                try:
+                    clinic._get(clinic.locations, item_loc, "clinic")
+                except ClinicError as e:
+                    raise type(e)(f"{what}: {e}") from None
+            warnings.append(f"{what}: its clinic no longer exists; moved to {clinic.locations[location_id].name}")
+            item_loc = location_id
         room_id = item.get("room_id") or None
-        if room_id and (room_id not in clinic.rooms or clinic.rooms[room_id].location_id != location_id):
+        if room_id and (room_id not in clinic.rooms or clinic.rooms[room_id].location_id != item_loc):
             if not lenient:
                 clinic._get(clinic.rooms, room_id, "room")
-                raise ClinicError(f"{what}: room {room_id!r} is not at this location")
-            warnings.append(f"{what}: its room isn't at this location any more; choose a room")
+                raise ClinicError(f"{what}: room {room_id!r} is not at {clinic.locations[item_loc].name}")
+            warnings.append(f"{what}: its room isn't at {clinic.locations[item_loc].name} any more; choose a room")
             room_id = None
         doctor_id = item.get("doctor_id") or None
         if doctor_id and doctor_id not in clinic.doctors:
@@ -132,6 +149,7 @@ class TreatmentLists:
             warnings.append(f"{what}: its template no longer exists; treated as a custom treatment")
             template = None
         return {"name": str(item.get("name") or "").strip()[:200],
+                "location_id": item_loc,
                 "treatment_id": template,
                 "numbing_minutes": item.get("numbing_minutes", 0),
                 "doctor_minutes": item.get("doctor_minutes", 0),

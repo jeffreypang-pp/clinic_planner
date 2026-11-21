@@ -118,6 +118,58 @@ class ListStorageTests(unittest.TestCase):
         self.assertEqual({x["name"] for x in self.lists.all(self.c)}, {"Morning / rush & co", "ünï", "a b  c"})
 
 
+class ClinicPerTreatmentTests(unittest.TestCase):
+    """Each treatment in a list belongs to its own clinic (location); the list's clinic is the default."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.lists = TreatmentLists(os.path.join(self.tmp.name, "data"))
+        self.c = small_clinic()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_list_can_mix_clinics_and_validates_each_room_against_its_own_clinic(self):
+        items = [item(location_id="a", room_id="a_plain"), item(location_id="b", room_id="b_plain", start="11:00"),
+                 item(room_id="a_laser")]                                           # no clinic: the list's (a)
+        saved = self.lists.save(self.c, "mixed", "a", items)
+        self.assertEqual([i["location_id"] for i in saved["items"]], ["a", "b", "a"])
+        got = self.lists.all(self.c)[0]
+        self.assertEqual((got["location"], got["locations"]), ("A", ["A", "B"]))
+        for bad, text in ((item(location_id="b", room_id="a_plain"), "not at B"),     # a room of the other clinic
+                          (item(location_id="a", room_id="b_plain"), "not at A"),
+                          (item(location_id="nowhere"), "nowhere")):
+            with self.assertRaises(ClinicError, msg=str(bad)) as cm:
+                self.lists.save(self.c, "bad", "a", [item(), bad])
+            self.assertIn(text, str(cm.exception))
+            self.assertIn("Treatment 2", str(cm.exception))                           # says which row is wrong
+
+    def test_older_lists_without_a_clinic_per_item_still_work(self):
+        path = os.path.join(self.tmp.name, "data", FILE_NAME)
+        os.makedirs(os.path.dirname(path))
+        legacy_item = {k: v for k, v in item().items()}
+        with open(path, "w") as f:
+            json.dump({"version": 1, "lists": {"old": {"location_id": "b", "saved": "2026-01-01T00:00:00",
+                                                       "items": [dict(legacy_item, room_id="b_plain")]}}}, f)
+        got = self.lists.all(self.c)[0]
+        self.assertEqual(got["items"][0]["location_id"], "b")                        # filled in from the list's clinic
+        self.assertEqual((got["location"], got["locations"]), ("B", ["B"]))
+        with open(path) as f:
+            self.assertNotIn("location_id", json.load(f)["lists"]["old"]["items"][0])   # reading never rewrites the file
+
+    def test_files_carry_each_treatments_clinic_and_loading_is_lenient_about_removed_clinics(self):
+        r = render_list_file(self.c, "mixed", "a", [item(location_id="b", room_id="b_plain"), item(room_id="a_plain")])
+        self.assertEqual([i["location_id"] for i in json.loads(r["text"])["items"]], ["b", "a"])
+        stale = [item(location_id="gone", room_id="a_plain"), item(location_id="b", room_id="a_plain")]
+        r = render_list_file(self.c, "old", "a", stale, lenient=True)
+        self.assertEqual((r["items"][0]["location_id"], r["items"][0]["room_id"]), ("a", "a_plain"))   # fell back to the list's clinic
+        self.assertEqual((r["items"][1]["location_id"], r["items"][1]["room_id"]), ("b", None))        # room isn't at B any more
+        self.assertTrue(any("clinic no longer exists" in w for w in r["warnings"]))
+        self.assertTrue(any("isn't at B" in w for w in r["warnings"]))
+        with self.assertRaises(NotFound):
+            render_list_file(self.c, "old", "a", stale)                              # strict: still an error
+
+
 class ListFileTests(unittest.TestCase):
     """A single list as a stand-alone file: validated like the app's own store, loadable leniently."""
 

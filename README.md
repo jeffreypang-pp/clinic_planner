@@ -154,8 +154,11 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   A copy of **Book next** sits in the panel's header, which stays pinned (and the panel scrolls itself to the next row to
   fill in), so you can keep booking without scrolling.
   **Save list… / Load / delete** keep named lists of the treatments in the panel (times, rooms, names, clients; not the bookings)
-  in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); a list belongs to a
-  location, and loading one switches to that location and replaces the list in the panel (bookings already made stay).
+  in `treatment_lists.json`. Saving always asks for confirmation (and warns before replacing a name); each treatment in the list belongs to its own
+  **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
+  so one list can span clinics. The list's own clinic is only the default for older lists/files that have no clinic per treatment. Loading a list replaces
+  the list in the panel (bookings already made stay) and switches the grid to the first treatment's clinic; treatments at other clinics are shown in the panel
+  and booked at their own clinic.
   The treatment **name** is optional: leave it empty and the treatment is called by its room's name (shown as the box's placeholder
   and used on the grid and in lists; a template's name is used if you pick a template, and a name you type always wins).
   The **Start** choices only offer times inside the location's opening hours for the selected date (one-off `date_overrides`
@@ -173,7 +176,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   File names are made safe (no slashes, `..`, or names Windows rejects) and nothing is written outside the folder you chose.
   *Load from file…* opens **Open**: browse to any folder, pick a `.json` file (treatment lists are tagged; double-click opens it). Only a real
   treatment-list file is accepted, and anything in it that no longer exists (a removed room, doctor, staff member, template) is dropped with a
-  warning instead of refusing the file; a list for another location switches to that location.
+  warning instead of refusing the file; a treatment whose clinic no longer exists is moved to the file's default clinic (with a warning).
   On the **Vercel deployment** the server can't see your folders, so it uses your browser's own *Save as* dialog (Chrome/Edge) or a download,
   and your computer's file dialog to load. This is separate from the named lists above, which stay in `treatment_lists.json` (or the browser).
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
@@ -222,8 +225,8 @@ replaces the given groups in memory, validated together with the rest first),
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]` (look-ups; the page no longer has a tab for them),
 `POST /api/list-file` (validate a list and return it as a file's text, or with `lenient` validate one read from a file; writes nothing) /
 `POST /api/list-export` (`directory`, `name`, `location_id`, `items`, optional `dry_run` / `overwrite`; local server only: write `<directory>/<name>.json`),
-`GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id`, `items`, `overwrite`; `DELETE ?name=`),
-`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
+`GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id` (default clinic), `items` (each may carry its own `location_id`), `overwrite`; `DELETE ?name=`),
+`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{location_id?, numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet
 
