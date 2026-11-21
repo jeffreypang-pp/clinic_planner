@@ -165,6 +165,14 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   Under the staff rows, **Total staff** shows how many staff the treatments need in each 15-minute block (grey = none,
   amber = every available staff member in use, red = a shortage). Name or change who does a step afterwards with the dropdown on a
   booked row (or in **Roster & bookings**). A staff member's own row only shows the steps that name them.
+  **Save to file… / Load from file…** (under *As a file*) put a list in a file **wherever you choose on your computer**, so you can keep it
+  anywhere, move it, or send it to someone. *Save to file…* asks for a name (it becomes the file name), then opens the same folder chooser
+  as Setup & save, then shows the full path (warning if a file of that name already exists and would be replaced) before writing
+  `<name>.json`; file names are made safe (no slashes, `..`, or names Windows rejects), and nothing is written outside the folder you
+  chose. On the **Vercel deployment** it uses your browser's own *Save as* dialog (Chrome/Edge) or downloads the file. *Load from file…*
+  opens your computer's file dialog; the list is validated like any other, and anything that no longer exists (a removed room, doctor, staff
+  member, template) is dropped with a warning instead of refusing the file; a list for another location switches to that location. This is
+  separate from the named lists above, which stay in `treatment_lists.json` (or the browser).
   **Tick box** on each doctor/staff row: ticked = in this location that day; unticking = not in any location;
   ticking someone who is at another location moves them here.
   **Edit availability**: drag across a row (doctor, staff or room), then *Block* / *Unblock*; optionally repeat weekly.
@@ -208,6 +216,8 @@ replaces the given groups in memory, validated together with the rest first),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),
 `PUT /api/locations/<id>/hours`,
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]` (look-ups; the page no longer has a tab for them),
+`POST /api/list-file` (validate a list and return it as a file's text, or with `lenient` validate one read from a file; writes nothing) /
+`POST /api/list-export` (`directory`, `name`, `location_id`, `items`, optional `dry_run` / `overwrite`; local server only: write `<directory>/<name>.json`),
 `GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id`, `items`, `overwrite`; `DELETE ?name=`),
 `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 

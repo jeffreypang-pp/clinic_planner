@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import tempfile
 import threading
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth import Auth, denied, handle_auth_route, mode_info
 from .env import load_dotenv
-from .lists import TreatmentLists
+from .lists import TreatmentLists, render_list_file, safe_filename
 from .model import Clinic, ClinicError, Conflict, GROUP_FILES, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
@@ -266,6 +267,42 @@ class App:
         self.lists.delete(_arg(q, "name"))
         return {"lists": self.lists.all(self.clinic)}
 
+    def post_list_file(self, q, body):
+        """Validate a list and return it as a stand-alone file (``filename`` + ``text``) for the browser
+        to download or write where the user chose.  With ``lenient`` it instead validates a list that was
+        read from a file for loading: ids that no longer exist are dropped with ``warnings``.
+        Touches no files, so it works on every deployment."""
+        return render_list_file(self.clinic, body.get("name"), _need(body, "location_id"), body.get("items"),
+                                bool((body or {}).get("lenient")))
+
+    def post_list_export(self, q, body):
+        """Write one list as ``<directory>/<name>.json`` (local server only; the browser-side path is
+        ``post_list_file``).  Refuses (409) to replace an existing file unless ``overwrite``;
+        ``dry_run`` only reports the full path and whether it exists."""
+        rendered = render_list_file(self.clinic, body.get("name"), _need(body, "location_id"), body.get("items"))
+        directory = self._directory(_need(body, "directory"))
+        filename = safe_filename(body.get("filename") or rendered["name"])
+        path = directory / filename
+        if path.is_dir():
+            raise ClinicError(f"{path} is a folder")
+        info = {"path": str(path), "directory": str(directory), "filename": filename,
+                "exists": path.exists(), "directory_exists": directory.is_dir()}
+        if (body or {}).get("dry_run"):
+            return info
+        if path.exists() and not body.get("overwrite"):
+            raise Conflict(f"{path} already exists")
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(directory), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(rendered["text"])
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        return {**info, "written": True}
+
     def post_clear_day(self, q, body):
         """Remove all bookings and blocks for a location on a date (``dry_run`` previews)."""
         return self.clinic.clear_day(_need(body, "location_id"), _need(body, "date"),
@@ -354,6 +391,8 @@ ROUTES = [
     ("GET", r"/api/bookings", "get_bookings"),
     ("POST", r"/api/bookings", "post_booking"),
     ("POST", r"/api/book-list", "post_book_list"),
+    ("POST", r"/api/list-file", "post_list_file"),
+    ("POST", r"/api/list-export", "post_list_export"),
     ("GET", r"/api/lists", "get_lists"),
     ("PUT", r"/api/lists", "put_list"),
     ("DELETE", r"/api/lists", "delete_list"),

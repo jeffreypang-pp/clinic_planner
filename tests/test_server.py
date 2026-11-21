@@ -187,6 +187,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(max(r["staff_total"]["needed"]), 1)
         self.assertEqual(self.disk(), before)                                     # all in memory until saved
 
+    def test_list_files_via_the_api(self):
+        item = dict(name="Mine", numbing_minutes=15, doctor_minutes=30, staff_minutes=15, room_id="central_laser_b",
+                    start="12:00", client="C")
+        before = self.disk()
+        status, r = self.call("POST", "/api/list-file", {"name": "Plan / A", "location_id": "central", "items": [item]})
+        self.assertEqual((status, r["filename"]), (200, "Plan _ A.json"))
+        self.assertEqual(json.loads(r["text"])["items"][0]["name"], "Mine")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "treatment_lists.json")))     # it writes nothing
+        self.assertEqual(self.disk(), before)
+        stale = dict(item, room_id="gone")
+        status, r = self.call("POST", "/api/list-file", {"name": "x", "location_id": "central", "items": [stale]})
+        self.assertEqual(status, 404)                                                          # strict by default
+        status, r = self.call("POST", "/api/list-file", {"name": "x", "location_id": "central", "items": [stale], "lenient": True})
+        self.assertEqual((status, r["items"][0]["room_id"], len(r["warnings"])), (200, None, 1))
+        self.assertEqual(self.call("POST", "/api/list-file", {"name": "x", "location_id": "central", "items": []})[0], 400)
+
     def test_json_editor_apply_is_not_a_save_either(self):
         before = self.disk()
         status, r = self.call("GET", "/api/clinic")

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 
@@ -66,20 +67,11 @@ class TreatmentLists:
     def save(self, clinic: Clinic, name, location_id, items, overwrite: bool = False) -> dict:
         """Validate and store a list.  Refuses (``Conflict``) to replace an existing name unless
         ``overwrite``.  Reads and rewrites only this file, and only this list's entry changes."""
-        if not isinstance(name, str) or not name.strip() or len(name.strip()) > MAX_NAME \
-                or any(ord(ch) < 32 for ch in name):
-            raise ClinicError(f"A list needs a name of 1-{MAX_NAME} characters")
-        name = name.strip()
-        loc = clinic._get(clinic.locations, location_id, "location")
-        if not isinstance(items, list) or not items:
-            raise ClinicError("The list is empty; add at least one treatment")
-        if len(items) > MAX_ITEMS:
-            raise ClinicError(f"At most {MAX_ITEMS} treatments per list")
-        clean = [self._normalise(clinic, loc.id, i + 1, item) for i, item in enumerate(items)]
+        name, loc_id, clean, _warnings = build_list(clinic, name, location_id, items)
         lists = self._read()
         if name in lists and not overwrite:
             raise Conflict(f"A saved list called {name!r} already exists")
-        lists[name] = {"location_id": loc.id, "saved": datetime.now().isoformat(timespec="seconds"),
+        lists[name] = {"location_id": loc_id, "saved": datetime.now().isoformat(timespec="seconds"),
                        "items": clean}
         self._write(lists)
         return {"name": name, **lists[name]}
@@ -92,11 +84,24 @@ class TreatmentLists:
         self._write(lists)
 
     @staticmethod
-    def _normalise(clinic: Clinic, location_id: str, n: int, item) -> dict:
-        """Check one item (``n`` = its 1-based position) and return it in canonical form."""
+    def _normalise(clinic: Clinic, location_id: str, n: int, item, lenient: bool = False,
+                   warnings: list | None = None) -> dict:
+        """Check one item (``n`` = its 1-based position) and return it in canonical form.
+
+        ``lenient`` (used when loading a file): ids that no longer exist (room, doctor, staff,
+        template) are dropped with a warning instead of being an error; the times and start are
+        always checked."""
         what = f"Treatment {n}"
+        warnings = warnings if warnings is not None else []
         if not isinstance(item, dict):
             raise ClinicError(f"{what}: must be an object")
+        if lenient:
+            item = dict(item)
+            if isinstance(item.get("staff"), dict):
+                gone = {k for k, v in item["staff"].items() if v and v not in clinic.staff}
+                if gone:
+                    warnings.append(f"{what}: staff member(s) no longer exist; set to assign later")
+                    item["staff"] = {k: (None if k in gone else v) for k, v in item["staff"].items()}
         slots = check_step_minutes(item.get("numbing_minutes", 0), item.get("doctor_minutes", 0),
                                    item.get("staff_minutes", 0), what)
         active = {step for step, n in zip(STEP_NAMES, slots) if n}
@@ -108,14 +113,24 @@ class TreatmentLists:
         if not start:
             raise ClinicError(f"{what}: missing 'start'")
         room_id = item.get("room_id") or None
-        if room_id and clinic._get(clinic.rooms, room_id, "room").location_id != location_id:
-            raise ClinicError(f"{what}: room {room_id!r} is not at this location")
+        if room_id and (room_id not in clinic.rooms or clinic.rooms[room_id].location_id != location_id):
+            if not lenient:
+                clinic._get(clinic.rooms, room_id, "room")
+                raise ClinicError(f"{what}: room {room_id!r} is not at this location")
+            warnings.append(f"{what}: its room isn't at this location any more; choose a room")
+            room_id = None
         doctor_id = item.get("doctor_id") or None
-        if doctor_id:
-            clinic._get(clinic.doctors, doctor_id, "doctor")
+        if doctor_id and doctor_id not in clinic.doctors:
+            if not lenient:
+                clinic._get(clinic.doctors, doctor_id, "doctor")
+            warnings.append(f"{what}: its doctor no longer exists; set to any available")
+            doctor_id = None
         template = item.get("treatment_id") or None
-        if template:
-            clinic._get(clinic.treatments, template, "treatment")
+        if template and template not in clinic.treatments:
+            if not lenient:
+                clinic._get(clinic.treatments, template, "treatment")
+            warnings.append(f"{what}: its template no longer exists; treated as a custom treatment")
+            template = None
         return {"name": str(item.get("name") or "").strip()[:200],
                 "treatment_id": template,
                 "numbing_minutes": item.get("numbing_minutes", 0),
@@ -125,6 +140,47 @@ class TreatmentLists:
                 "staff": {step: named.get(step) for step in STEP_NAMES if step in active},
                 "start": format_slot(parse_time(start)),
                 "client": str(item.get("client") or "").strip()[:200]}
+
+
+def build_list(clinic: Clinic, name, location_id, items, lenient: bool = False) -> tuple[str, str, list, list]:
+    """Validate a whole list: returns ``(name, location_id, canonical_items, warnings)``."""
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > MAX_NAME \
+            or any(ord(ch) < 32 for ch in name):
+        raise ClinicError(f"A list needs a name of 1-{MAX_NAME} characters")
+    loc = clinic._get(clinic.locations, location_id, "location")
+    if not isinstance(items, list) or not items:
+        raise ClinicError("The list is empty; add at least one treatment")
+    if len(items) > MAX_ITEMS:
+        raise ClinicError(f"At most {MAX_ITEMS} treatments per list")
+    warnings: list[str] = []
+    clean = [TreatmentLists._normalise(clinic, loc.id, i + 1, item, lenient, warnings)
+             for i, item in enumerate(items)]
+    return name.strip(), loc.id, clean, warnings
+
+
+# A single list as a stand-alone file (what "Save to file…" writes and "Load from file…" reads)
+LIST_FILE_KIND = "clinic-treatment-list"
+_WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def safe_filename(name: str) -> str:
+    """A file name for a list: no path parts or characters Windows/macOS/Linux dislike, ends in .json."""
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name or "")).strip(" .")
+    if base.lower().endswith(".json"):
+        base = base[:-5].rstrip(" .")
+    base = base[:100].rstrip(" .") or "treatment list"
+    if base.split(".")[0].lower() in _WINDOWS_RESERVED:
+        base = "_" + base
+    return base + ".json"
+
+
+def render_list_file(clinic: Clinic, name, location_id, items, lenient: bool = False) -> dict:
+    """Validate a list and produce the file for it: ``{filename, text, name, location_id, items, warnings}``."""
+    name, loc_id, clean, warnings = build_list(clinic, name, location_id, items, lenient)
+    data = {"kind": LIST_FILE_KIND, "version": 1, "name": name, "location_id": loc_id,
+            "saved": datetime.now().isoformat(timespec="seconds"), "items": clean}
+    return {"filename": safe_filename(name), "text": _dumps(data), "name": name, "location_id": loc_id,
+            "items": clean, "warnings": warnings}
 
 
 class MemoryLists(TreatmentLists):

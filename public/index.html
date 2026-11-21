@@ -612,6 +612,9 @@ function drawBookingPanel() {
       ${saved.length ? `<select id="ls-pick" title="Saved lists">${saved.map(l => `<option value="${esc(l.name)}" ${l.name === S.listName ? "selected" : ""}>${esc(l.name)} (${l.count}${l.location ? ", " + esc(l.location) : ""})</option>`).join("")}</select>
         <button class="btn secondary" id="ls-load">Load</button><button class="link" id="ls-del" title="Delete the selected saved list">delete</button>`
         : `<span class="muted">no saved lists yet</span>`}</div>
+    <div class="bk-lists"><span class="muted">As a file:</span>
+      <button class="btn secondary" id="lf-save" title="Save this list as a file in a folder you choose on your computer">Save to file…</button>
+      <button class="btn secondary" id="lf-load" title="Load a list from a file on your computer">Load from file…</button></div>
     <details style="margin-bottom:8px"><summary class="muted" style="cursor:pointer">How this works</summary>
       <div class="muted" style="margin-top:4px">Give the numbing, doctor treatment and staff treatment times and the room, then press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
       The doctor is chosen automatically (or pick one). Staff are interchangeable: leave a step on <b>assign later</b> (it still counts as one staff member in the <b>Total staff</b> row) or name someone, and name them afterwards from the booked row.
@@ -642,6 +645,8 @@ function drawBookingPanel() {
     else if (el.dataset.cancel !== undefined) guard(() => cancelBooked(+el.dataset.cancel));
     else if (el.id === "bk-next" || el.id === "bk-next-top") guard(() => runBooking("next"));
     else if (el.id === "ls-save") guard(saveList);
+    else if (el.id === "lf-save") guard(saveListFile);
+    else if (el.id === "lf-load") guard(loadListFile);
     else if (el.id === "ls-load") guard(() => loadList($("#ls-pick").value));
     else if (el.id === "ls-del") guard(() => deleteList($("#ls-pick").value));
     else if (el.id === "bk-all") guard(() => runBooking("all"));
@@ -673,14 +678,71 @@ async function loadList(name) {
   const L = S.list;
   if (L.items.some(i => i.status === "booked" || i.touched) &&
       !confirm(`Replace the list in this panel with “${l.name}” (${l.count} treatment${l.count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
+  const moved = await putListInPanel(l);
+  banner("ok", `Loaded “${esc(l.name)}”${moved ? ` (switched to ${esc(l.location)})` : ""}. Press Book next to start.`, 4000);
+}
+// replace the list in the panel with a saved one {name, location_id, items}; a list belongs to a location (its rooms)
+async function putListInPanel(l) {
+  const L = S.list;
   L.items = l.items.map(x => Object.assign(newItem(), { preset: x.treatment_id || "", name: x.name || "", numbing: x.numbing_minutes,
     doctor: x.doctor_minutes, staff: x.staff_minutes, room: x.room_id, doctorId: x.doctor_id || "", start: x.start, client: x.client || "", touched: true,
     staffIds: Object.fromEntries(Object.entries(x.staff || {}).filter(([, v]) => v)) }));
   L.summary = ""; L.last = null; L.scrollNext = true; S.listName = l.name;
-  const moved = l.location_id && l.location_id !== S.location && byId(locs(), l.location_id);
-  if (moved) S.location = l.location_id;   // a list belongs to a location (its rooms)
+  const moved = !!(l.location_id && l.location_id !== S.location && byId(locs(), l.location_id));
+  if (moved) S.location = l.location_id;
   await viewTimetable();
-  banner("ok", `Loaded “${esc(l.name)}”${moved ? ` (switched to ${esc(l.location)})` : ""}. Press Book next to start.`, 4000);
+  return moved;
+}
+
+// ---------- a list as a stand-alone file: you choose where it goes on your computer ----------
+const listBody = name => ({ name, location_id: S.location, items: S.list.items.map(toApiItem) });
+async function saveListFile() {
+  const L = S.list, t = S.tt, n = L.items.length;
+  if (!n) throw new Error("The list is empty: add a treatment first.");
+  const name = (prompt(`Name for this list (it becomes the file name).\n${n} treatment${n === 1 ? "" : "s"} at ${t.location}:`, S.listName || "") || "").trim();
+  if (!name) return;
+  if (S.stateless) return saveListFileInBrowser(name);
+  const dir = await openDirPicker(recentDirs()[0] || ""); if (!dir) return;       // choose the folder on this computer
+  rememberDir(dir);
+  const body = { ...listBody(name), directory: dir };
+  const info = await api("POST", "/api/list-export", { ...body, dry_run: true });
+  if (!confirm(`Save this list as a file?\n\n  ${info.path}\n\n${n} treatment${n === 1 ? "" : "s"} at ${t.location}: times, rooms, names, clients (not the bookings).\n` +
+      `${info.exists ? "\nA file with this name ALREADY EXISTS there and will be REPLACED.\n" : ""}${info.directory_exists ? "" : "\nThe folder doesn't exist yet and will be created.\n"}\nNothing else is changed.`)) return;
+  const r = await api("POST", "/api/list-export", { ...body, overwrite: info.exists });
+  S.listName = name; banner("ok", `Saved the list to ${esc(r.path)}.`, 6000);
+}
+async function saveListFileInBrowser(name) {   // deployed: the browser's own "Save as" dialog, or a download
+  const r = await api("POST", "/api/list-file", listBody(name));
+  if (typeof window.showSaveFilePicker === "function") {
+    let h; try { h = await window.showSaveFilePicker({ suggestedName: r.filename, types: [{ description: "Treatment list", accept: { "application/json": [".json"] } }] }); }
+    catch (e) { if (e.name === "AbortError") return; throw e; }
+    const w = await h.createWritable(); await w.write(r.text); await w.close();
+    banner("ok", `Saved the list as “${esc(h.name)}”.`, 6000);
+  } else {
+    downloadFiles({ [r.filename]: r.text });
+    banner("ok", `Downloaded ${esc(r.filename)}. Your browser decides where downloads go (it can be set to ask each time).`, 7000);
+  }
+  S.listName = name;
+}
+function pickJsonFile() {
+  return new Promise(resolve => {
+    const input = document.createElement("input"); input.type = "file"; input.accept = ".json,application/json";
+    input.onchange = () => resolve(input.files[0] || null); input.oncancel = () => resolve(null); input.click();
+  });
+}
+async function loadListFile() {
+  const f = await pickJsonFile(); if (!f) return;
+  let data; try { data = JSON.parse(await f.text()); } catch (e) { throw new Error(`${f.name} isn't valid JSON: ${e.message}`); }
+  if (data && data.lists && !data.items) throw new Error(`${f.name} holds a whole set of saved lists (treatment_lists.json), not one list file. Use the dropdown above to load one of those.`);
+  if (!data || data.kind !== "clinic-treatment-list" || !Array.isArray(data.items)) throw new Error(`${f.name} isn't a treatment list file (the kind made by “Save to file…”).`);
+  const r = await api("POST", "/api/list-file", { name: data.name || f.name.replace(/\.json$/i, ""), location_id: data.location_id, items: data.items, lenient: true });
+  const L = S.list, count = r.items.length;
+  if (L.items.some(i => i.status === "booked" || i.touched) &&
+      !confirm(`Replace the list in this panel with “${r.name}” from ${f.name} (${count} treatment${count === 1 ? "" : "s"})?\n\nBookings already made stay in the schedule; only the list here is replaced.`)) return;
+  await putListInPanel({ name: r.name, location_id: r.location_id, items: r.items });
+  const loc = byId(locs(), r.location_id);
+  banner(r.warnings.length ? "warn" : "ok", `Loaded “${esc(r.name)}” from ${esc(f.name)}${loc ? ` (${esc(loc.name)})` : ""}.` +
+    (r.warnings.length ? `<ul>${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : " Press Book next to start."), r.warnings.length ? 0 : 4000);
 }
 async function deleteList(name) {
   if (!name || !confirm(`Delete the saved list “${name}”?${S.stateless ? "" : "\n\nThis rewrites treatment_lists.json without it."}`)) return;

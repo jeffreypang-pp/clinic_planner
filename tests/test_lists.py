@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from clinic.lists import FILE_NAME, TreatmentLists
+from clinic.lists import FILE_NAME, LIST_FILE_KIND, TreatmentLists, build_list, render_list_file, safe_filename
 from clinic.model import ClinicError, Conflict, NotFound
 from tests.test_clinic import small_clinic
 
@@ -116,6 +116,66 @@ class ListStorageTests(unittest.TestCase):
         for name in ("Morning / rush & co", "ünï", "a b  c"):
             self.lists.save(self.c, name, "a", [item()])
         self.assertEqual({x["name"] for x in self.lists.all(self.c)}, {"Morning / rush & co", "ünï", "a b  c"})
+
+
+class ListFileTests(unittest.TestCase):
+    """A single list as a stand-alone file: validated like the app's own store, loadable leniently."""
+
+    def setUp(self):
+        self.c = small_clinic()
+
+    def test_render_produces_a_portable_file(self):
+        items = [item(staff={"numbing": "s1", "doctor": None, "staff": None}), item(start="11:15", room_id="a_laser")]
+        r = render_list_file(self.c, "  Morning rush  ", "a", items)
+        self.assertEqual((r["filename"], r["name"], r["warnings"]), ("Morning rush.json", "Morning rush", []))
+        data = json.loads(r["text"])
+        self.assertEqual((data["kind"], data["version"], data["name"], data["location_id"]),
+                         (LIST_FILE_KIND, 1, "Morning rush", "a"))
+        self.assertEqual(data["items"], r["items"])
+        self.assertEqual([i["start"] for i in data["items"]], ["10:00", "11:15"])
+        self.assertEqual(data["items"][0]["staff"], {"numbing": "s1", "doctor": None, "staff": None})
+        self.assertTrue(r["text"].endswith("\n"))
+
+    def test_strict_validation_matches_the_app_store(self):
+        bad = [("", [item()]), ("ok", []), ("ok", [item(doctor_minutes=0)]), ("ok", [item(start="10:10")]),
+               ("ok", [item(room_id="b_plain")]), ("ok", [item(room_id="ghost")]), ("ok", [item(doctor_id="ghost")]),
+               ("ok", [item(staff={"numbing": "ghost"})])]
+        for name, items in bad:
+            with self.assertRaises(ClinicError, msg=str((name, items))):
+                render_list_file(self.c, name, "a", items)
+        with self.assertRaises(NotFound):
+            render_list_file(self.c, "ok", "nowhere", [item()])
+
+    def test_lenient_loading_drops_ids_that_no_longer_exist_and_says_so(self):
+        gone = item(room_id="ghost_room", doctor_id="ghost_doc", treatment_id="ghost_tpl",
+                    staff={"numbing": "ghost_staff", "doctor": "s2", "staff": None})
+        r = render_list_file(self.c, "old list", "a", [gone, item(room_id="b_plain")], lenient=True)
+        first, second = r["items"]
+        self.assertEqual((first["room_id"], first["doctor_id"], first["treatment_id"]), (None, None, None))
+        self.assertEqual(first["staff"], {"numbing": None, "doctor": "s2", "staff": None})   # the staff that exists is kept
+        self.assertIsNone(second["room_id"])                                                    # a room at another location
+        text = " ".join(r["warnings"])
+        for needle in ("room", "doctor", "template", "staff member"):
+            self.assertIn(needle, text)
+        self.assertTrue(r["warnings"][0].startswith("Treatment 1"))
+        # the things that can't be repaired are still errors, even when lenient
+        for broken in (item(doctor_minutes=0), item(start="25:00"), item(start=""), "not an item"):
+            with self.assertRaises(ClinicError, msg=str(broken)):
+                render_list_file(self.c, "x", "a", [broken], lenient=True)
+        with self.assertRaises(NotFound):
+            render_list_file(self.c, "x", "gone location", [item()], lenient=True)         # a list for a location we don't have
+
+    def test_safe_filenames_cannot_escape_or_upset_any_operating_system(self):
+        cases = {"Morning rush": "Morning rush.json", "a/b\\c": "a_b_c.json", "../../etc/passwd": "_.._etc_passwd.json",
+                 "CON": "_CON.json", "  .hidden ": "hidden.json", "x.json": "x.json", "a:b*c?": "a_b_c_.json",
+                 "": "treatment list.json", "ünï  ": "ünï.json", "COM1.txt": "_COM1.txt.json"}
+        for name, expected in cases.items():
+            self.assertEqual(safe_filename(name), expected, repr(name))
+        for nasty in ("../x", "a/../../b", "\\\\server\\share", "x\0y", "." * 5, " ", "x" * 500):
+            out = safe_filename(nasty)
+            self.assertTrue(out.endswith(".json") and len(out) <= 105, repr(nasty))
+            self.assertFalse(any(ch in out for ch in '/\\\0'), repr(nasty))
+            self.assertNotIn("..", out.replace(".json", "") if out.startswith(".") else "", repr(nasty))
 
 
 if __name__ == "__main__":

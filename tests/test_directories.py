@@ -294,6 +294,66 @@ class BrowseTests(DirectoryTests):
     # (the inherited directory tests run again here: harmless, they use the same fixtures)
 
 
+class ListExportTests(DirectoryTests):
+    """Save one list as <directory>/<name>.json (local server)."""
+
+    ITEM = dict(name="Mine", numbing_minutes=15, doctor_minutes=30, staff_minutes=15, room_id="central_laser_b", start="12:00")
+
+    def export(self, **kw):
+        body = {"name": "Morning rush", "location_id": "central", "items": [self.ITEM]}
+        body.update(kw)
+        return dispatch(self.app, "POST", "/api/list-export", {}, body)
+
+    def test_dry_run_then_write_then_overwrite_protection(self):
+        target = os.path.join(self.tmp.name, "lists", "mine")
+        status, info = self.export(directory=target, dry_run=True)
+        self.assertEqual((status, info["filename"], info["exists"], info["directory_exists"]),
+                         (200, "Morning rush.json", False, False))
+        self.assertEqual(info["path"], os.path.join(os.path.realpath(target), "Morning rush.json"))
+        self.assertFalse(os.path.exists(target))                                  # a dry run writes nothing
+        status, done = self.export(directory=target)
+        self.assertEqual((status, done["written"]), (200, True))
+        self.assertEqual(os.listdir(target), ["Morning rush.json"])               # the directory was created; one file only
+        data = json.load(open(info["path"]))
+        self.assertEqual((data["kind"], data["name"], data["items"][0]["name"]), ("clinic-treatment-list", "Morning rush", "Mine"))
+        status, again = self.export(directory=target)
+        self.assertEqual(status, 409)                                             # never silently replaces a file
+        self.assertIn("already exists", again["error"])
+        self.assertTrue(self.export(directory=target, dry_run=True)[1]["exists"])
+        before = open(info["path"]).read()
+        status, ok = self.export(directory=target, overwrite=True, items=[dict(self.ITEM, start="13:00")])
+        self.assertEqual(status, 200)
+        self.assertNotEqual(open(info["path"]).read(), before)
+        self.assertEqual([f for f in os.listdir(target)], ["Morning rush.json"])  # no temp files left behind
+
+    def test_it_only_ever_writes_inside_the_chosen_directory(self):
+        target = os.path.join(self.tmp.name, "safe")
+        for nasty in ("../escape", "../../escape", "/abs/path/x", "a/b"):
+            status, r = self.export(directory=target, filename=nasty, overwrite=True)
+            self.assertEqual(status, 200, nasty)
+            self.assertTrue(os.path.realpath(r["path"]).startswith(os.path.realpath(target) + os.sep), nasty)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "escape.json")))
+        self.assertFalse(os.path.exists("/abs/path/x.json"))
+
+    def test_validation_and_directory_checks(self):
+        target = os.path.join(self.tmp.name, "v")
+        self.assertEqual(self.export(directory=target, items=[dict(self.ITEM, doctor_minutes=0)])[0], 400)
+        self.assertEqual(self.export(directory=target, items=[])[0], 400)
+        self.assertEqual(self.export(directory=target, name="")[0], 400)
+        self.assertEqual(self.export(directory="")[0], 400)
+        self.assertFalse(os.path.exists(target))                                  # nothing created for an invalid list
+        a_file = os.path.join(self.tmp.name, "afile")
+        open(a_file, "w").close()
+        self.assertEqual(self.export(directory=a_file)[0], 400)
+        os.makedirs(os.path.join(target, "Morning rush.json"))                    # a folder in the way
+        self.assertEqual(self.export(directory=target, overwrite=True)[0], 400)
+
+    def test_the_clinic_data_files_and_saved_lists_are_untouched(self):
+        self.export(directory=os.path.join(self.tmp.name, "out"))
+        self.assertEqual(Clinic.read_files(self.data), self.snapshot)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "treatment_lists.json")))
+
+
 class StatelessDirectoryTests(unittest.TestCase):
     """On Vercel the server can't see the user's computer, and must not read or write its own paths."""
 
@@ -315,6 +375,12 @@ class StatelessDirectoryTests(unittest.TestCase):
         out = handle_call({"method": "GET", "path": "/api/browse", "query": {"path": [self.tmp.name]}, "body": None, "state": self.state}, self.dir)
         self.assertEqual(out["status"], 400)                                    # the server's filesystem is never listed
         self.assertNotIn("entries", out["result"])
+        item = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="central_laser_b", start="12:00")
+        out = self.call("POST", "/api/list-export", {"directory": target, "name": "x", "location_id": "central", "items": [item]})
+        self.assertEqual(out["status"], 400)                                    # a server directory is never written
+        self.assertFalse(os.path.exists(target))
+        out = self.call("POST", "/api/list-file", {"name": "x", "location_id": "central", "items": [item]})
+        self.assertEqual((out["status"], out["result"]["filename"]), (200, "x.json"))   # but the browser can get the file text
         out = self.call("POST", "/api/mkdir", {"path": self.tmp.name, "name": "x"})
         self.assertEqual(out["status"], 400)
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "x")))
