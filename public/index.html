@@ -531,7 +531,7 @@ async function viewTimetable() {
     if (S.editAvail) return;
     const c = e.target.closest(".cell.free"); if (!c) return;
     const row = c.closest(".tt-row");   // use this time (and this room, if it is a room row) for the next treatment
-    queueItem(it => { it.loc = S.location; it.locChosen = true; it.start = c.dataset.start; if (row?.dataset.kind === "room") it.room = row.dataset.id; });
+    queueItem(it => { it.loc = S.location; it.locChosen = true; it.date = S.date; it.dateChosen = true; it.start = c.dataset.start; if (row?.dataset.kind === "room") it.room = row.dataset.id; });
     drawBookingPanel();
   };
   drawBookingPanel();
@@ -548,11 +548,12 @@ const staffAt = (loc, iso) => { const at = S.clinic.presence?.[iso]?.staff || {}
 const clinicName = loc => byId(locs(), loc)?.name || loc;
 const fitRoom = (presetId, loc) => { const t = byId(S.clinic.treatments, presetId), rooms = roomsAt(loc);
   return (t && rooms.find(r => t.required_equipment.every(e => r.equipment.includes(e))))?.id || rooms[0]?.id || null; };
-const openingStart = loc => { const l = byId(locs(), loc), h = l && hoursOn(l, S.date); return h ? slotStr(h[0]) : "10:00"; };
-const newItem = from => ({ loc: from?.locChosen ? from.loc : S.location, locChosen: !!from?.locChosen,   // a row follows the timetable's clinic until you pick one
+const openingStart = (loc, iso = S.date) => { const l = byId(locs(), loc), h = l && hoursOn(l, iso); return h ? slotStr(h[0]) : "10:00"; };
+const newItem = from => ({ loc: from?.locChosen ? from.loc : S.location, locChosen: !!from?.locChosen,   // a row follows the timetable's clinic and date until you pick one
+  date: from?.dateChosen ? from.date : S.date, dateChosen: !!from?.dateChosen,
   preset: from?.preset || "", name: from?.preset ? from.name : "", numbing: from?.numbing ?? 15, doctor: from?.doctor ?? 30,
   staff: from?.staff ?? 15, room: from?.room || null, doctorId: "", staffIds: {},
-  start: from?.start || openingStart(from?.locChosen ? from.loc : S.location), client: "",
+  start: from?.start || openingStart(from?.locChosen ? from.loc : S.location, from?.dateChosen ? from.date : S.date), client: "",
   status: "pending", booking: null, reasons: [], preview: null, note: "", touched: false });
 const resetItem = it => { if (it.status === "failed") it.status = "pending"; it.reasons = []; it.preview = null; it.note = ""; S.list.summary = ""; };
 function applyPreset(it, id) {   // optional template: fills the name and the three times, picks a room with its equipment
@@ -560,22 +561,23 @@ function applyPreset(it, id) {   // optional template: fills the name and the th
   const t = byId(S.clinic.treatments, id); if (!t) return;
   it.name = t.name; it.numbing = t.numbing_minutes; it.doctor = t.doctor_minutes; it.staff = t.staff_minutes; it.room = fitRoom(id, it.loc);
 }
-const startSpans = loc => { const l = byId(locs(), loc), h = l && hoursOn(l, S.date); return h ? [h] : []; };
+const startSpans = (loc, iso) => { const l = byId(locs(), loc), h = l && hoursOn(l, iso); return h ? [h] : []; };
 function fixItem(it) {   // keep a row consistent with its clinic and with the one rule
   if (!it.locChosen || !byId(locs(), it.loc)) { it.loc = S.location; it.locChosen = false; }   // follow the timetable's clinic
+  if (!it.dateChosen || !it.date) { it.date = S.date; it.dateChosen = false; }                  // ...and its date
   if (!roomsAt(it.loc).some(r => r.id === it.room)) {
     const had = !!it.room; it.room = fitRoom(it.preset, it.loc);
     if (had) it.note = `The room it had isn't at ${clinicName(it.loc)} (or no longer exists): check the room.`;
   }
   if (+it.doctor === 0) it.numbing = 0;
   if (!it.touched) {   // a row nobody has edited follows the opening hours (another day or location, a longer treatment)
-    const r = startOptions(startSpans(it.loc), +it.numbing + +it.doctor + +it.staff, it.start);
+    const r = startOptions(startSpans(it.loc, it.date), +it.numbing + +it.doctor + +it.staff, it.start);
     if (r.outside && r.first) it.start = r.first;
   }
-  const here = new Set(staffAt(it.loc, S.date).map(x => x.id)), on = new Set(activeSteps(it));
+  const here = new Set(staffAt(it.loc, it.date).map(x => x.id)), on = new Set(activeSteps(it));
   for (const k of Object.keys(it.staffIds)) {   // a named staff member must be ticked in at the row's clinic, and the step must exist
     if (!on.has(k)) delete it.staffIds[k];
-    else if (it.staffIds[k] && !here.has(it.staffIds[k])) { delete it.staffIds[k]; it.note = `A named staff member isn't ticked in at ${clinicName(it.loc)}, so that step is back to “assign later”.`; }
+    else if (it.staffIds[k] && !here.has(it.staffIds[k])) { delete it.staffIds[k]; it.note = `A named staff member isn't ticked in at ${clinicName(it.loc)} on ${it.date}, so that step is back to “assign later”.`; }
   }
 }
 // Fill the next not-yet-booked row. With {append: true} (used when sending from another tab) a row the user has
@@ -598,20 +600,20 @@ function drawBookingPanel() {
   const rows = L.items.map((it, i) => {
     if (it.status === "booked") { const b = it.booking, away = b.location_id !== S.location || b.date !== S.date;
       if (it.collapsed) return `<div class="bk-row ok" data-i="${i}"><div class="bk-fold"><button class="link tog" data-toggle="${i}" title="Show the details of this treatment">▸</button>
-        <span class="ttl" title="${esc(b.treatment)} · ${esc(b.location)}"><b>${i + 1}. ${esc(b.treatment)}</b> <span class="muted">· ${esc(b.location)}</span></span>
+        <span class="ttl" title="${esc(b.treatment)} · ${esc(b.location)}"><b>${i + 1}. ${esc(b.treatment)}</b> <span class="muted">· ${esc(b.location)}${b.date !== S.date ? " · " + esc(b.date) : ""}</span></span>
         <span class="pill yes">booked</span><button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button></div></div>`;
       return `<div class="bk-row ok" data-i="${i}"><button class="link tog" data-toggle="${i}" title="Collapse: show only the treatment and clinic">▾</button> <span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
         <button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button>
         <div class="muted">${away || multi ? `${esc(b.location)}${b.date !== S.date ? " · " + b.date : ""}<br>` : ""}${bookedDetail(b)}</div></div>`; }
-    const p = it.preview, total = +it.numbing + +it.doctor + +it.staff, sr = startOptions(startSpans(it.loc), total, it.start);
-    const rooms = roomsAt(it.loc), hereStaff = staffAt(it.loc, S.date);
+    const p = it.preview, total = +it.numbing + +it.doctor + +it.staff, sr = startOptions(startSpans(it.loc, it.date), total, it.start);
+    const rooms = roomsAt(it.loc), hereStaff = staffAt(it.loc, it.date);
     const preview = !p ? "" : p.status === "booked" ? `<span class="pill yes">can be done</span><div class="muted">${detail(p.booking)}</div>`
       : p.status === "failed" ? `<span class="pill no">cannot be performed</span><ul class="reasons">${p.reasons.map(m => `<li>${esc(m)}</li>`).join("")}</ul>`
       : `<span class="muted">not attempted</span>`;
     const title = (it.name || "").trim() || rooms.find(r => r.id === it.room)?.name || "treatment";
     if (it.collapsed) return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
       <div class="bk-fold"><button class="link tog" data-toggle="${i}" title="Show the details of this treatment">▸</button>
-        <span class="ttl" title="${esc(title)} · ${esc(clinicName(it.loc))}"><b>${i + 1}. ${esc(title)}</b> <span class="muted">· ${esc(clinicName(it.loc))}</span></span>
+        <span class="ttl" title="${esc(title)} · ${esc(clinicName(it.loc))}"><b>${i + 1}. ${esc(title)}</b> <span class="muted">· ${esc(clinicName(it.loc))}${it.date !== S.date ? " · " + esc(it.date) : ""}</span></span>
         ${it.status === "failed" || p?.status === "failed" ? `<span class="pill no">cannot be performed</span>` : p?.status === "booked" ? `<span class="pill yes">can be done</span>` : ""}
         <button class="link" data-rm="${i}">remove</button></div></div>`;
     return `<div class="bk-row ${it.status === "failed" ? "bad" : ""}" data-i="${i}">
@@ -622,7 +624,8 @@ function drawBookingPanel() {
         <label title="Numbing: 1 staff. Must be 0 when the doctor treatment is 0.">Numbing (min)<select data-f="numbing" ${+it.doctor === 0 ? "disabled" : ""}>${minOpts(it.numbing)}</select></label>
         <label title="Doctor treatment: a doctor + 1 staff">Doctor (min)<select data-f="doctor">${minOpts(it.doctor)}</select></label>
         <label title="Staff treatment: 1 staff">Staff (min)<select data-f="staff">${minOpts(it.staff)}</select></label></div>
-      ${multi ? `<div class="bk-edit"><label class="grow" title="The clinic this treatment is at: its rooms, ticked-in staff and opening hours are used">Clinic<select data-f="loc">${locs().map(l => `<option value="${l.id}" ${l.id === it.loc ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label></div>` : ""}
+      <div class="bk-edit">${multi ? `<label class="grow" title="The clinic this treatment is at: its rooms, ticked-in staff and opening hours are used">Clinic<select data-f="loc">${locs().map(l => `<option value="${l.id}" ${l.id === it.loc ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>` : ""}
+        <label class="grow" title="The day this treatment is booked for. It follows the date at the top until you pick one here; clear it to follow the top date again.">Date<input type="date" data-f="date" value="${esc(it.date)}"></label></div>
       <div class="bk-edit"><label class="grow">Room<select data-f="room">${rooms.length ? rooms.map(r => `<option value="${r.id}" ${r.id === it.room ? "selected" : ""}>${esc(r.name)}</option>`).join("") : `<option value="">(no rooms at ${esc(clinicName(it.loc))})</option>`}</select></label>
         ${+it.doctor > 0 ? `<label class="grow">Doctor<select data-f="doctorId"><option value="">any available</option>${S.clinic.doctors.map(d => `<option value="${d.id}" ${d.id === it.doctorId ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>` : ""}</div>
       ${activeSteps(it).length ? `<div class="bk-mins" style="grid-template-columns: repeat(${activeSteps(it).length}, 1fr)">${activeSteps(it).map(k => `
@@ -663,8 +666,10 @@ function drawBookingPanel() {
     const it = L.items[+row.dataset.i];
     if (f.startsWith("staff:")) it.staffIds[f.slice(6)] = el.value;
     else if (f === "preset") applyPreset(it, el.value);
+    else if (f === "date") { if (el.value) { it.date = el.value; it.dateChosen = true; } else { it.date = S.date; it.dateChosen = false; }
+      const so = startOptions(startSpans(it.loc, it.date), 15, it.start); if (so.outside && so.first) it.start = so.first; }   // the hours of that day (named staff are re-checked against that day's roster)
     else if (f === "loc") { it.loc = el.value; it.locChosen = true; it.room = fitRoom(it.preset, it.loc); it.staffIds = {}; it.doctorId = "";   // a new clinic: its rooms and people
-      const so = startOptions(startSpans(it.loc), 15, it.start); if (so.outside && so.first) it.start = so.first; }   // ...and its opening hours
+      const so = startOptions(startSpans(it.loc, it.date), 15, it.start); if (so.outside && so.first) it.start = so.first; }   // ...and its opening hours
     else it[f] = el.value;
     it.touched = true; resetItem(it); drawBookingPanel(); };
   panel.onclick = e => { const el = e.target;
@@ -686,12 +691,12 @@ function drawBookingPanel() {
 }
 
 // ---------- lists: saved to / loaded from files; loading replaces the list in this panel ----------
-const toApiItem = it => ({ location_id: it.loc, name: it.name, treatment_id: it.preset || null, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor,
+const toApiItem = it => ({ location_id: it.loc, date: it.dateChosen ? it.date : undefined, name: it.name, treatment_id: it.preset || null, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor,
   staff_minutes: +it.staff, room_id: it.room, doctor_id: it.doctorId || null, staff: staffPayload(it), start: it.start, client: it.client });
 // replace the list in the panel with a saved one {name, location_id, items}; a list belongs to a location (its rooms)
 async function putListInPanel(l) {
   const L = S.list;
-  L.items = l.items.map(x => Object.assign(newItem(), { loc: x.location_id || l.location_id, locChosen: true, preset: x.treatment_id || "", name: x.name || "", numbing: x.numbing_minutes,
+  L.items = l.items.map(x => Object.assign(newItem(), { loc: x.location_id || l.location_id, locChosen: true, date: x.date || S.date, dateChosen: !!x.date, preset: x.treatment_id || "", name: x.name || "", numbing: x.numbing_minutes,
     doctor: x.doctor_minutes, staff: x.staff_minutes, room: x.room_id, doctorId: x.doctor_id || "", start: x.start, client: x.client || "", touched: true,
     staffIds: Object.fromEntries(Object.entries(x.staff || {}).filter(([, v]) => v)) }));
   L.summary = ""; L.last = null; L.scrollNext = true; S.listName = l.name;
@@ -796,7 +801,7 @@ async function runBooking(mode) {   // "next" | "all" | "check" (dry run)
     items: use.map(i => { const it = L.items[i];
       return { name: it.name, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor, staff_minutes: +it.staff, room_id: it.room,
                doctor_id: it.doctorId || undefined, treatment_id: it.preset || undefined, staff: staffPayload(it), start: it.start, client: it.client,
-               location_id: it.loc }; }) });
+               location_id: it.loc, date: it.date }; }) });
   r.results.forEach((x, k) => { const it = L.items[use[k]]; it.reasons = []; it.preview = null; it.note = "";
     if (mode === "check") it.preview = { status: x.status, reasons: x.reasons || [], booking: x.booking };
     else if (x.status === "booked") { it.status = "booked"; it.booking = x.booking; L.last = x.booking.id; }

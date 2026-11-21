@@ -153,6 +153,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   The list of treatments in the panel is saved and loaded with **Save to file… / Load from file…** (below; times, rooms, names, clients, clinics; not the bookings).
   each treatment in the list belongs to its own
   **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
+  and a *Date* (each treatment is booked for its own day; it follows the date at the top until you pick one, clear the field to follow it again; a saved list/file keeps a date only if you picked one),
   so one list can span clinics. Each treatment, booked or not, can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
   *cannot be performed* / *can be done* marker after a check; **Collapse all / Expand all** and **Clear list** sit at the top of the panel, under the file buttons. Collapsing is only a view setting: it isn't saved with lists. The list's own clinic is only the default for older lists/files that have no clinic per treatment. Loading a list replaces
   the list in the panel (bookings already made stay) and switches the grid to the first treatment's clinic; treatments at other clinics are shown in the panel
@@ -223,7 +224,7 @@ replaces the given groups in memory, validated together with the rest first),
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]` (look-ups; the page no longer has a tab for them),
 `POST /api/list-file` (validate a list and return it as a file's text, or with `lenient` validate one read from a file; writes nothing) /
 `POST /api/list-export` (`directory`, `name`, `location_id`, `items`, optional `dry_run` / `overwrite`; local server only: write `<directory>/<name>.json`),
-`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{location_id?, numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
+`GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{location_id?, date?, numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet
 

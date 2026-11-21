@@ -102,6 +102,24 @@ class ClinicPerTreatmentTests(unittest.TestCase):
             render_list_file(self.c, "old", "a", stale)                              # strict: still an error
 
 
+class ItemDateTests(unittest.TestCase):
+    def setUp(self):
+        self.c = small_clinic()
+
+    def test_an_item_may_carry_a_date_and_it_must_be_valid(self):
+        got = build_list(self.c, "d", "a", [item(date="2026-12-01"), item()])[2]
+        self.assertEqual([i["date"] for i in got], ["2026-12-01", None])           # no date: booked on whichever day is chosen
+        with self.assertRaises(ClinicError) as cm:
+            build_list(self.c, "d", "a", [item(), item(date="31/12/2026")])
+        self.assertIn("Treatment 2", str(cm.exception))
+
+    def test_a_file_with_a_bad_date_still_loads_and_says_so(self):
+        r = render_list_file(self.c, "d", "a", [item(date="soon")], lenient=True)
+        self.assertEqual(r["items"][0]["date"], None)
+        self.assertTrue(any("date" in w for w in r["warnings"]))
+        self.assertEqual(json.loads(render_list_file(self.c, "d", "a", [item(date="2026-12-01")])["text"])["items"][0]["date"], "2026-12-01")
+
+
 class ListFileTests(unittest.TestCase):
     """A single list as a stand-alone file: validated like the app's own store, loadable leniently."""
 

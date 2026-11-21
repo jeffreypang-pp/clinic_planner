@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from .model import STEP_NAMES, Clinic, ClinicError, _dumps, check_step_minutes, format_slot, parse_time
+from .model import STEP_NAMES, Clinic, ClinicError, _dumps, check_step_minutes, format_slot, parse_date, parse_time
 
 MAX_ITEMS = 200
 MAX_NAME = 80
@@ -19,6 +19,8 @@ MAX_NAME = 80
 def normalise_item(clinic: Clinic, location_id: str, n: int, item, lenient: bool = False,
                    warnings: list | None = None) -> dict:
     """Check one item (``n`` = its 1-based position) and return it in canonical form.
+
+    An item may also carry the ``date`` it is for (``YYYY-MM-DD``).
 
     Each item belongs to a clinic (``location_id``); an item without one belongs to the list's
     clinic (``location_id`` argument), which is how older lists and files load.
@@ -47,6 +49,14 @@ def normalise_item(clinic: Clinic, location_id: str, n: int, item, lenient: bool
     start = item.get("start")
     if not start:
         raise ClinicError(f"{what}: missing 'start'")
+    day = None      # optional: the date this treatment is for; without one it goes on whichever day the list is booked
+    if item.get("date"):
+        try:
+            day = parse_date(item["date"]).isoformat()
+        except ClinicError as e:
+            if not lenient:
+                raise type(e)(f"{what}: {e}") from None
+            warnings.append(f"{what}: its date isn't a valid date; it will use the day you book on")
     item_loc = item.get("location_id") or location_id
     if item_loc not in clinic.locations:
         if not lenient:
@@ -83,6 +93,7 @@ def normalise_item(clinic: Clinic, location_id: str, n: int, item, lenient: bool
             "staff_minutes": item.get("staff_minutes", 0),
             "room_id": room_id, "doctor_id": doctor_id,
             "staff": {step: named.get(step) for step in STEP_NAMES if step in active},
+            "date": day,
             "start": format_slot(parse_time(start)),
             "client": str(item.get("client") or "").strip()[:200]}
 

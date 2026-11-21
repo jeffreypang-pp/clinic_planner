@@ -804,6 +804,16 @@ class BookListTests(unittest.TestCase):
         self.assertEqual([x["status"] for x in r["results"]], ["booked", "failed", "not_attempted"])
         self.assertTrue(any("not at B" in m for m in r["results"][1]["reasons"]))
 
+    def test_each_treatment_in_a_list_can_be_for_its_own_date(self):
+        tue = date(2026, 11, 30)                                   # the next Monday (the test clinic is open on Mondays)
+        for day in (MON, tue):
+            tick(self.c, "staff", "s1", "a", day=day)
+        base = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain", start="10:00")
+        r = self.c.book_list("a", MON, [dict(base), dict(base, date=tue.isoformat()), dict(base, date="not a date")])
+        self.assertEqual([x["status"] for x in r["results"]], ["booked", "booked", "failed"])   # same hour and room, different days
+        self.assertEqual(sorted(b.date for b in self.c.bookings.values()), [MON, tue])
+        self.assertTrue(any("Bad date" in m for m in r["results"][2]["reasons"]))
+
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},
                            dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain",
