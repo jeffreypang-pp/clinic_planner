@@ -597,7 +597,10 @@ function drawBookingPanel() {
   const endOf = it => slotStr(Math.min(96, (+it.start.slice(0, 2)) * 4 + (+it.start.slice(3)) / 15 + (+it.numbing + +it.doctor + +it.staff) / 15));
   const rows = L.items.map((it, i) => {
     if (it.status === "booked") { const b = it.booking, away = b.location_id !== S.location || b.date !== S.date;
-      return `<div class="bk-row ok" data-i="${i}"><span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
+      if (it.collapsed) return `<div class="bk-row ok" data-i="${i}"><div class="bk-fold"><button class="link tog" data-toggle="${i}" title="Show the details of this treatment">▸</button>
+        <span class="ttl" title="${esc(b.treatment)} · ${esc(b.location)}"><b>${i + 1}. ${esc(b.treatment)}</b> <span class="muted">· ${esc(b.location)}</span></span>
+        <span class="pill yes">booked</span><button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button></div></div>`;
+      return `<div class="bk-row ok" data-i="${i}"><button class="link tog" data-toggle="${i}" title="Collapse: show only the treatment and clinic">▾</button> <span class="pill yes">booked</span> <b>${i + 1}. ${esc(b.treatment)}</b> ${b.start}–${b.end}${b.client ? " · " + esc(b.client) : ""}
         <button class="link" data-cancel="${i}" title="Cancel this booking">cancel</button>
         <div class="muted">${away || multi ? `${esc(b.location)}${b.date !== S.date ? " · " + b.date : ""}<br>` : ""}${bookedDetail(b)}</div></div>`; }
     const p = it.preview, total = +it.numbing + +it.doctor + +it.staff, sr = startOptions(startSpans(it.loc), total, it.start);
@@ -637,7 +640,7 @@ function drawBookingPanel() {
       <button class="btn secondary" id="lf-save" title="Save this list as a file in a folder you choose on your computer">Save to file…</button>
       <button class="btn secondary" id="lf-load" title="Load a list from a file on your computer">Load from file…</button>
       <span style="flex:1"></span>
-      <button class="btn secondary" id="bk-fold" title="Collapse every treatment to one line, or expand them all again">${L.items.filter(i => i.status !== "booked").every(i => i.collapsed) ? "Expand all" : "Collapse all"}</button>
+      <button class="btn secondary" id="bk-fold" title="Collapse every treatment to one line, or expand them all again">${L.items.length && L.items.every(i => i.collapsed) ? "Expand all" : "Collapse all"}</button>
       <button class="btn secondary" id="bk-clear" title="Empties this list; bookings already made stay in the schedule">Clear list</button></div>
     <details style="margin-bottom:8px"><summary class="muted" style="cursor:pointer">How this works</summary>
       <div class="muted" style="margin-top:4px">Give the numbing, doctor treatment and staff treatment times and the room, then press <b>Book next</b>; the grid updates so you can see how the rooms, doctors and staff fill up.
@@ -667,7 +670,7 @@ function drawBookingPanel() {
   panel.onclick = e => { const el = e.target;
     if (el.id === "bk-add") { L.items.push(newItem(L.items[L.items.length - 1])); drawBookingPanel(); }
     else if (el.dataset.toggle !== undefined) { const it = L.items[+el.dataset.toggle]; it.collapsed = !it.collapsed; drawBookingPanel(); }
-    else if (el.id === "bk-fold") { const open = L.items.filter(i => i.status !== "booked"), all = open.every(i => i.collapsed); open.forEach(i => i.collapsed = !all); drawBookingPanel(); }
+    else if (el.id === "bk-fold") { const all = L.items.every(i => i.collapsed); L.items.forEach(i => i.collapsed = !all); drawBookingPanel(); }
     else if (el.dataset.rm !== undefined) { L.items.splice(+el.dataset.rm, 1); L.summary = ""; drawBookingPanel(); }
     else if (el.id === "bk-clear") { L.items = []; L.summary = ""; L.last = null; viewTimetable(); }
     else if (el.dataset.cancel !== undefined) guard(() => cancelBooked(+el.dataset.cancel));

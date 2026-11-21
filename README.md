@@ -153,7 +153,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   The list of treatments in the panel is saved and loaded with **Save to file… / Load from file…** (below; times, rooms, names, clients, clinics; not the bookings).
   each treatment in the list belongs to its own
   **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
-  so one list can span clinics. Each treatment can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
+  so one list can span clinics. Each treatment, booked or not, can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
   *cannot be performed* / *can be done* marker after a check; **Collapse all / Expand all** and **Clear list** sit at the top of the panel, under the file buttons. Collapsing is only a view setting: it isn't saved with lists. The list's own clinic is only the default for older lists/files that have no clinic per treatment. Loading a list replaces
   the list in the panel (bookings already made stay) and switches the grid to the first treatment's clinic; treatments at other clinics are shown in the panel
   and booked at their own clinic.
