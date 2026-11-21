@@ -153,18 +153,6 @@ class DirectoryTests(unittest.TestCase):
         self.assertIn("ghost", r["error"])
         self.assertEqual(self.app.clinic.staff["s1"].name, "Ana")             # every refusal left the working data alone
 
-    def test_saved_treatment_lists_are_not_part_of_a_directory_copy(self):
-        os.makedirs(self.data, exist_ok=True)
-        with open(os.path.join(self.data, "treatment_lists.json"), "w") as f:
-            f.write('{"version": 1, "lists": {}}')
-        target = os.path.join(self.tmp.name, "copy")
-        self.call("POST", "/api/export", {"directory": target})
-        self.assertNotIn("treatment_lists.json", os.listdir(target))
-        other, _ = self.make_other()
-        with open(os.path.join(other, "treatment_lists.json"), "w") as f:
-            f.write("not even json")
-        self.assertEqual(self.call("POST", "/api/import", {"directory": other})[0], 200)   # ignored, never read
-
     def test_files_endpoint_returns_the_exact_file_text(self):
         status, r = self.call("GET", "/api/files")
         self.assertEqual((status, r["files"]), (200, self.snapshot))
@@ -355,7 +343,7 @@ class ListFilePickerTests(DirectoryTests):
     def test_open_refuses_anything_that_is_not_a_treatment_list(self):
         def open_(name):
             return dispatch(self.app, "POST", "/api/list-open", {}, {"path": os.path.join(self.root, name)})
-        for name, text in (("other.json", "isn't a treatment list"), ("store.json", "whole set of saved lists"),
+        for name, text in (("other.json", "isn't a treatment list"), ("store.json", "isn't a treatment list"),
                            ("readme.txt", "isn't a .json file"), ("sub", "isn't a file"), ("nope.json", "isn't a file")):
             status, r = open_(name)
             self.assertEqual(status, 400, name)
@@ -436,10 +424,9 @@ class ListExportTests(DirectoryTests):
         os.makedirs(os.path.join(target, "Morning rush.json"))                    # a folder in the way
         self.assertEqual(self.export(directory=target, overwrite=True)[0], 400)
 
-    def test_the_clinic_data_files_and_saved_lists_are_untouched(self):
+    def test_the_clinic_data_files_are_untouched(self):
         self.export(directory=os.path.join(self.tmp.name, "out"))
         self.assertEqual(Clinic.read_files(self.data), self.snapshot)
-        self.assertFalse(os.path.exists(os.path.join(self.data, "treatment_lists.json")))
 
 
 class StatelessDirectoryTests(unittest.TestCase):
@@ -450,7 +437,7 @@ class StatelessDirectoryTests(unittest.TestCase):
         self.dir = os.path.join(self.tmp.name, "clinic_data")
         build_sample(date(2026, 11, 20), days=7).save_dir(self.dir)
         init = initial_payload(self.dir)
-        self.state = {"version": 1, "groups": init["groups"], "base": init["groups"], "lists": {}, "rawHash": init["hashes"]}
+        self.state = {"version": 1, "groups": init["groups"], "base": init["groups"], "rawHash": init["hashes"]}
 
     def tearDown(self):
         self.tmp.cleanup()

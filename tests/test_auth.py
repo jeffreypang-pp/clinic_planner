@@ -117,7 +117,7 @@ class StatelessRouteTests(unittest.TestCase):
         self.dir = os.path.join(self.tmp.name, "clinic_data")
         build_sample(date(2026, 11, 20), days=7).save_dir(self.dir)
         init = initial_payload(self.dir)
-        self.state = {"version": 1, "groups": init["groups"], "base": init["groups"], "lists": {}, "rawHash": init["hashes"]}
+        self.state = {"version": 1, "groups": init["groups"], "base": init["groups"], "rawHash": init["hashes"]}
         self.a = auth()
 
     def tearDown(self):
@@ -240,9 +240,9 @@ class HttpTests(unittest.TestCase):
         with anon.open(base + "/") as r:
             self.assertIn(b"Clinic Planner", r.read())                         # the page holds no data
         self.assertEqual(self.req(anon, "GET", base + "/api/mode")[1]["authenticated"], False)
-        for path in ("/api/clinic", "/api/timetable?location=central&date=2026-11-23", "/api/lists", "/api/status"):
+        for path in ("/api/clinic", "/api/timetable?location=central&date=2026-11-23", "/api/status"):
             self.assertEqual(self.req(anon, "GET", base + path)[0], 401, path)
-        for method, path in (("PUT", "/api/clinic"), ("POST", "/api/save"), ("POST", "/api/book-list"), ("DELETE", "/api/lists?name=x")):
+        for method, path in (("PUT", "/api/clinic"), ("POST", "/api/save"), ("POST", "/api/book-list"), ("DELETE", "/api/bookings/x")):
             self.assertEqual(self.req(anon, method, base + path, {})[0], 401, path)
         self.assertEqual(self.req(anon, "POST", base + "/api/login", {"password": "wrong"})[0], 401)
         self.assertEqual(self.req(anon, "GET", base + "/api/clinic")[0], 401)   # a failed login grants nothing

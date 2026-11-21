@@ -1,11 +1,9 @@
-"""Saved lists of treatments: explicit saves only, validated, separate from the clinic data files."""
+"""Lists of treatments: validation and the stand-alone list file."""
 import json
-import os
-import tempfile
 import unittest
 
-from clinic.lists import FILE_NAME, LIST_FILE_KIND, TreatmentLists, build_list, render_list_file, safe_filename
-from clinic.model import ClinicError, Conflict, NotFound
+from clinic.lists import LIST_FILE_KIND, build_list, render_list_file, safe_filename
+from clinic.model import ClinicError, NotFound
 from tests.test_clinic import small_clinic
 
 
@@ -15,52 +13,23 @@ def item(**kw):
     return dict(base, **kw)
 
 
-class ListStorageTests(unittest.TestCase):
+class ListValidationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.dir = os.path.join(self.tmp.name, "data")
-        self.lists = TreatmentLists(self.dir)
         self.c = small_clinic()
 
-    def tearDown(self):
-        self.tmp.cleanup()
+    def build(self, name, loc, items, **kw):
+        return build_list(self.c, name, loc, items, **kw)
 
-    def test_nothing_exists_until_a_list_is_saved(self):
-        self.assertEqual(self.lists.all(self.c), [])
-        self.assertFalse(os.path.exists(self.dir))
-
-    def test_save_load_roundtrip_keeps_order_and_fields(self):
+    def test_keeps_order_and_fields(self):
         items = [item(start="09:00"), item(name="Facial", numbing_minutes=0, doctor_minutes=0, staff_minutes=30,
                                            start="11:15", room_id="a_laser"), item(doctor_id="d1", treatment_id="laser", room_id="a_laser")]
-        saved = self.lists.save(self.c, "Morning rush", "a", items)
-        self.assertEqual(saved["location_id"], "a")
-        got = self.lists.all(self.c)
-        self.assertEqual([(x["name"], x["location"], x["count"]) for x in got], [("Morning rush", "A", 3)])
-        self.assertEqual([i["start"] for i in got[0]["items"]], ["09:00", "11:15", "10:00"])
-        self.assertEqual(got[0]["items"][1]["staff_minutes"], 30)
-        self.assertEqual((got[0]["items"][2]["doctor_id"], got[0]["items"][2]["treatment_id"]), ("d1", "laser"))
-        with open(os.path.join(self.dir, FILE_NAME)) as f:
-            self.assertEqual(json.load(f)["lists"]["Morning rush"]["items"], got[0]["items"])
+        name, loc, got, warnings = self.build(" Morning rush ", "a", items)
+        self.assertEqual((name, loc, warnings), ("Morning rush", "a", []))
+        self.assertEqual([i["start"] for i in got], ["09:00", "11:15", "10:00"])
+        self.assertEqual(got[1]["staff_minutes"], 30)
+        self.assertEqual((got[2]["doctor_id"], got[2]["treatment_id"]), ("d1", "laser"))
 
-    def test_existing_name_needs_overwrite_and_only_that_entry_changes(self):
-        self.lists.save(self.c, "One", "a", [item()])
-        self.lists.save(self.c, "Two", "b", [item(room_id="b_plain")])
-        with self.assertRaises(Conflict):
-            self.lists.save(self.c, "One", "a", [item(start="12:00")])
-        self.assertEqual(self.lists.all(self.c)[0]["items"][0]["start"], "10:00")        # unchanged
-        self.lists.save(self.c, "One", "a", [item(start="12:00"), item()], overwrite=True)
-        by = {x["name"]: x for x in self.lists.all(self.c)}
-        self.assertEqual((by["One"]["count"], by["One"]["items"][0]["start"]), (2, "12:00"))
-        self.assertEqual(by["Two"]["count"], 1)                                             # neighbour untouched
-
-    def test_delete(self):
-        self.lists.save(self.c, "One", "a", [item()])
-        self.lists.delete("One")
-        self.assertEqual(self.lists.all(self.c), [])
-        with self.assertRaises(NotFound):
-            self.lists.delete("One")
-
-    def test_validation_rejects_bad_lists_without_writing(self):
+    def test_validation_rejects_bad_lists(self):
         bad = [("", [item()]), ("   ", [item()]), ("x" * 81, [item()]), ("ok", []), ("ok", None), ("ok", ["nope"]),
                ("ok", [item(doctor_minutes=0)]),                       # numbing without a doctor treatment
                ("ok", [item(), item(numbing_minutes=0, doctor_minutes=0, staff_minutes=0)]),
@@ -69,93 +38,56 @@ class ListStorageTests(unittest.TestCase):
                ("ok", [item(room_id="ghost")]), ("ok", [item(doctor_id="ghost")]), ("ok", [item(treatment_id="ghost")])]
         for name, items in bad:
             with self.assertRaises(ClinicError, msg=str((name, items))):
-                self.lists.save(self.c, name, "a", items)
+                self.build(name, "a", items)
         with self.assertRaises(NotFound):
-            self.lists.save(self.c, "ok", "nowhere", [item()])
-        self.assertFalse(os.path.exists(os.path.join(self.dir, FILE_NAME)))
+            self.build("ok", "nowhere", [item()])
         with self.assertRaises(ClinicError) as cm:
-            self.lists.save(self.c, "ok", "a", [item(), item(doctor_minutes=0)])
+            self.build("ok", "a", [item(), item(doctor_minutes=0)])
         self.assertIn("Treatment 2", str(cm.exception))              # says which row is wrong
 
-    def test_named_staff_are_saved_per_step_and_validated(self):
+    def test_named_staff_are_kept_per_step_and_validated(self):
         items = [item(staff={"numbing": "s1", "doctor": None, "staff": "s2"}),
                  item(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, staff={"staff": "s1"})]
-        self.lists.save(self.c, "named", "a", items)
-        got = self.lists.all(self.c)[0]["items"]
+        got = self.build("named", "a", items)[2]
         self.assertEqual(got[0]["staff"], {"numbing": "s1", "doctor": None, "staff": "s2"})
         self.assertEqual(got[1]["staff"], {"staff": "s1"})                       # only the steps it has
-        self.lists.save(self.c, "later", "a", [item()])                          # nothing named = assign later
-        later = next(x for x in self.lists.all(self.c) if x["name"] == "later")
-        self.assertEqual(later["items"][0]["staff"], {"numbing": None, "doctor": None, "staff": None})
+        later = self.build("later", "a", [item()])[2]                            # nothing named = assign later
+        self.assertEqual(later[0]["staff"], {"numbing": None, "doctor": None, "staff": None})
         for bad, text in ((dict(staff={"numbing": "ghost"}), "ghost"),
                           (dict(numbing_minutes=0, staff={"numbing": "s1"}), "numbing step"),
                           (dict(staff={"bogus": "s1"}), "Unknown step"),
                           (dict(staff=["s1"]), "staff as")):
             with self.assertRaises(ClinicError, msg=str(bad)) as cm:
-                self.lists.save(self.c, "bad", "a", [item(**bad)])
+                self.build("bad", "a", [item(**bad)])
             self.assertIn(text, str(cm.exception))
             self.assertIn("Treatment 1", str(cm.exception))
 
-    def test_a_row_without_a_room_can_be_saved(self):
-        self.lists.save(self.c, "norooms", "a", [item(room_id=None)])
-        self.assertIsNone(self.lists.all(self.c)[0]["items"][0]["room_id"])
-
-    def test_corrupt_file_is_reported_not_overwritten(self):
-        os.makedirs(self.dir)
-        path = os.path.join(self.dir, FILE_NAME)
-        with open(path, "w") as f:
-            f.write("{nope")
-        with self.assertRaises(ClinicError):
-            self.lists.all(self.c)
-        with self.assertRaises(ClinicError):
-            self.lists.save(self.c, "x", "a", [item()])
-        with open(path) as f:
-            self.assertEqual(f.read(), "{nope")
-
-    def test_names_with_odd_characters(self):
-        for name in ("Morning / rush & co", "ünï", "a b  c"):
-            self.lists.save(self.c, name, "a", [item()])
-        self.assertEqual({x["name"] for x in self.lists.all(self.c)}, {"Morning / rush & co", "ünï", "a b  c"})
+    def test_a_row_without_a_room_is_allowed(self):
+        self.assertIsNone(self.build("norooms", "a", [item(room_id=None)])[2][0]["room_id"])
 
 
 class ClinicPerTreatmentTests(unittest.TestCase):
     """Each treatment in a list belongs to its own clinic (location); the list's clinic is the default."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.lists = TreatmentLists(os.path.join(self.tmp.name, "data"))
         self.c = small_clinic()
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def test_a_list_can_mix_clinics_and_validates_each_room_against_its_own_clinic(self):
         items = [item(location_id="a", room_id="a_plain"), item(location_id="b", room_id="b_plain", start="11:00"),
                  item(room_id="a_laser")]                                           # no clinic: the list's (a)
-        saved = self.lists.save(self.c, "mixed", "a", items)
-        self.assertEqual([i["location_id"] for i in saved["items"]], ["a", "b", "a"])
-        got = self.lists.all(self.c)[0]
-        self.assertEqual((got["location"], got["locations"]), ("A", ["A", "B"]))
+        _name, loc, got, _w = build_list(self.c, "mixed", "a", items)
+        self.assertEqual(([i["location_id"] for i in got], loc), (["a", "b", "a"], "a"))
         for bad, text in ((item(location_id="b", room_id="a_plain"), "not at B"),     # a room of the other clinic
                           (item(location_id="a", room_id="b_plain"), "not at A"),
                           (item(location_id="nowhere"), "nowhere")):
             with self.assertRaises(ClinicError, msg=str(bad)) as cm:
-                self.lists.save(self.c, "bad", "a", [item(), bad])
+                build_list(self.c, "bad", "a", [item(), bad])
             self.assertIn(text, str(cm.exception))
             self.assertIn("Treatment 2", str(cm.exception))                           # says which row is wrong
 
-    def test_older_lists_without_a_clinic_per_item_still_work(self):
-        path = os.path.join(self.tmp.name, "data", FILE_NAME)
-        os.makedirs(os.path.dirname(path))
-        legacy_item = {k: v for k, v in item().items()}
-        with open(path, "w") as f:
-            json.dump({"version": 1, "lists": {"old": {"location_id": "b", "saved": "2026-01-01T00:00:00",
-                                                       "items": [dict(legacy_item, room_id="b_plain")]}}}, f)
-        got = self.lists.all(self.c)[0]
-        self.assertEqual(got["items"][0]["location_id"], "b")                        # filled in from the list's clinic
-        self.assertEqual((got["location"], got["locations"]), ("B", ["B"]))
-        with open(path) as f:
-            self.assertNotIn("location_id", json.load(f)["lists"]["old"]["items"][0])   # reading never rewrites the file
+    def test_older_files_without_a_clinic_per_item_take_the_lists_clinic(self):
+        got = build_list(self.c, "old", "b", [item(room_id="b_plain")])[2]
+        self.assertEqual(got[0]["location_id"], "b")
 
     def test_files_carry_each_treatments_clinic_and_loading_is_lenient_about_removed_clinics(self):
         r = render_list_file(self.c, "mixed", "a", [item(location_id="b", room_id="b_plain"), item(room_id="a_plain")])
@@ -188,7 +120,7 @@ class ListFileTests(unittest.TestCase):
         self.assertEqual(data["items"][0]["staff"], {"numbing": "s1", "doctor": None, "staff": None})
         self.assertTrue(r["text"].endswith("\n"))
 
-    def test_strict_validation_matches_the_app_store(self):
+    def test_strict_validation_rejects_bad_files(self):
         bad = [("", [item()]), ("ok", []), ("ok", [item(doctor_minutes=0)]), ("ok", [item(start="10:10")]),
                ("ok", [item(room_id="b_plain")]), ("ok", [item(room_id="ghost")]), ("ok", [item(doctor_id="ghost")]),
                ("ok", [item(staff={"numbing": "ghost"})])]

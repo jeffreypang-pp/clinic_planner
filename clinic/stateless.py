@@ -6,14 +6,13 @@ server rebuilds a ``Clinic`` from that state, runs exactly the same request hand
 local server (``server.dispatch``), and for requests that may change something sends the new
 state back.  Nothing is stored on the server; the files in ``clinic_data/`` are only the
 read-only starting point.  "Save" therefore hands back the changed files to download (put them
-in ``clinic_data/`` and commit), and saved treatment lists live in the browser.
+in ``clinic_data/`` and commit).
 
 State sent by the browser::
 
     {"version": 1,
      "groups":  {resources, planning, schedule},   # the working data
      "base":    {resources, planning, schedule},   # as of the last save/download (for "unsaved")
-     "lists":   {name: {...}},                     # saved treatment lists
      "rawHash": {file name: sha256 or null}}       # the deployed files it started from
 
 Endpoints (see ``serve``): GET /api/mode, GET /api/initial, POST /api/call.
@@ -27,7 +26,6 @@ import threading
 from pathlib import Path
 
 from .auth import Auth, denied, handle_auth_route, mode_info
-from .lists import MemoryLists, TreatmentLists
 from .model import Clinic, ClinicError, Conflict, GROUPS
 from .sample import build_sample
 from .server import App, dispatch
@@ -50,11 +48,9 @@ def _deployed_clinic(directory: str) -> Clinic:
 
 
 def initial_payload(directory: str) -> dict:
-    """What a browser starts from: the deployed data, saved lists and file fingerprints."""
+    """What a browser starts from: the deployed data and file fingerprints."""
     clinic = _deployed_clinic(directory)
-    path = os.path.join(directory, "treatment_lists.json")
-    lists = TreatmentLists(directory)._read() if os.path.exists(path) else {}
-    return {"groups": clinic.to_groups(), "lists": lists,
+    return {"groups": clinic.to_groups(),
             "hashes": file_hashes(Clinic.read_files(directory))}
 
 
@@ -80,11 +76,10 @@ class StatelessApp(App):
         self.clinic = Clinic.from_groups(state["groups"])
         self.base_groups = state["base"]
         self.canon = Clinic.from_groups(state["base"]).render_files()
-        self.lists = MemoryLists(state.get("lists") or {})
 
     def state(self) -> dict:
         return {"version": STATE_VERSION, "groups": self.clinic.to_groups(), "base": self.base_groups,
-                "lists": self.lists.data, "rawHash": self.raw_hash}
+                "rawHash": self.raw_hash}
 
     def external(self) -> list[str]:
         """Deployed files that differ from the ones this working copy started from (a newer deploy)."""

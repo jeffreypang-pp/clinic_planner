@@ -112,7 +112,6 @@
              border-bottom: 1px solid var(--line); border-radius: 10px 10px 0 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .bk-head .btn { padding: 7px 18px; font-weight: 600; }
   .bk-lists { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  .bk-lists select { flex: 1; min-width: 120px; }
   .bk-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
   .bk-row.ok { border-color: var(--free-line); background: color-mix(in srgb, var(--free) 35%, transparent); }
   .bk-row.bad { border-color: var(--bad); }
@@ -327,7 +326,7 @@ function downloadFiles(files) {   // one download per changed file (spaced out s
 const toDisk = () => S.stateless ? "download the files" : "write to disk";
 async function initStatelessState() {
   const deployed = await rawFetch("GET", "/api/initial");   // the data shipped with this deployment
-  const fresh = () => ({ version: 1, groups: deployed.groups, base: deployed.groups, lists: deployed.lists, rawHash: deployed.hashes });
+  const fresh = () => ({ version: 1, groups: deployed.groups, base: deployed.groups, rawHash: deployed.hashes });
   let stored = null; try { stored = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
   S.state = stored && stored.version === 1 && stored.groups && stored.base ? stored : fresh();
   try { await api("GET", "/api/status"); }   // does the stored data still load?
@@ -682,7 +681,7 @@ function drawBookingPanel() {
   }
 }
 
-// ---------- saved lists: explicit, confirmed saves into treatment_lists.json; load replaces the list in this panel ----------
+// ---------- lists: saved to / loaded from files; loading replaces the list in this panel ----------
 const toApiItem = it => ({ location_id: it.loc, name: it.name, treatment_id: it.preset || null, numbing_minutes: +it.numbing, doctor_minutes: +it.doctor,
   staff_minutes: +it.staff, room_id: it.room, doctor_id: it.doctorId || null, staff: staffPayload(it), start: it.start, client: it.client });
 // replace the list in the panel with a saved one {name, location_id, items}; a list belongs to a location (its rooms)
@@ -745,7 +744,6 @@ async function loadListFile() {
   if (S.stateless) {   // deployed: the computer's own file dialog (the server can't see your folders)
     const f = await pickJsonFile(); if (!f) return;
     let data; try { data = JSON.parse(await f.text()); } catch (e) { throw new Error(`${f.name} isn't valid JSON: ${e.message}`); }
-    if (data && data.lists && !data.items) throw new Error(`${f.name} holds a whole set of saved lists (treatment_lists.json), not one list file. Use the dropdown above to load one of those.`);
     if (!data || data.kind !== "clinic-treatment-list" || !Array.isArray(data.items)) throw new Error(`${f.name} isn't a treatment list file (the kind made by “Save to file…”).`);
     r = await api("POST", "/api/list-file", { name: data.name || f.name.replace(/\.json$/i, ""), location_id: data.location_id, items: data.items, lenient: true });
     label = f.name;
@@ -1010,7 +1008,7 @@ async function viewSetup() {
 }
 
 // ---------- save a copy to / load from a directory ----------
-const FILE_NOTE = "resources.json, planning.json and schedule.json (not the saved treatment lists)";
+const FILE_NOTE = "resources.json, planning.json and schedule.json (not the list of treatments)";
 const GROUP_FILE_NAMES = { resources: "resources.json", planning: "planning.json", schedule: "schedule.json" };
 const DIR_KEY = "clinic-planner-dirs";
 const recentDirs = () => { try { return JSON.parse(localStorage.getItem(DIR_KEY)) || []; } catch (e) { return []; } };

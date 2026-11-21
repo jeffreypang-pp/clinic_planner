@@ -23,7 +23,7 @@ class StatelessTests(unittest.TestCase):
         build_sample(date(2026, 11, 20), days=14).save_dir(self.dir)
         init = initial_payload(self.dir)
         self.state = {"version": 1, "groups": init["groups"], "base": init["groups"],
-                      "lists": init["lists"], "rawHash": init["hashes"]}
+                      "rawHash": init["hashes"]}
         self.snapshot = self.files()
         self.day = "2026-11-23"
 
@@ -47,7 +47,7 @@ class StatelessTests(unittest.TestCase):
         self.assertEqual(set(init["hashes"]), {"resources.json", "planning.json", "schedule.json"})
         self.assertEqual(init["hashes"]["planning.json"],
                          hashlib.sha256(self.snapshot["planning.json"].encode()).hexdigest())
-        self.assertEqual(init["lists"], {})
+        self.assertNotIn("lists", init)
 
     def test_falls_back_to_the_sample_when_nothing_is_deployed(self):
         with tempfile.TemporaryDirectory() as empty:
@@ -159,20 +159,6 @@ class StatelessTests(unittest.TestCase):
         self.assertEqual(self.state["rawHash"]["schedule.json"],
                          hashlib.sha256(newer.encode()).hexdigest())
 
-    # ---- saved lists live in the state, not on disk -----------------------------
-    def test_saved_lists_are_kept_in_the_browser_state(self):
-        item = dict(name="Mine", numbing_minutes=15, doctor_minutes=30, staff_minutes=15,
-                    room_id="central_laser_b", start="12:00", client="C")
-        out = self.call("PUT", "/api/lists", {"name": "Plan A", "location_id": "central", "items": [item]})
-        self.assertEqual(out["status"], 200)
-        self.assertEqual(list(out["state"]["lists"]), ["Plan A"])
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "treatment_lists.json")))
-        self.assertEqual(self.call("PUT", "/api/lists", {"name": "Plan A", "location_id": "central", "items": [item]})["status"], 409)
-        got = self.call("GET", "/api/lists")["result"]["lists"]
-        self.assertEqual([(x["name"], x["count"]) for x in got], [("Plan A", 1)])
-        self.call("DELETE", "/api/lists", query={"name": ["Plan A"]})
-        self.assertEqual(self.state["lists"], {})
-
     # ---- bad input ----------------------------------------------------------------
     def test_bad_state_and_payloads_are_rejected(self):
         for state in (None, {}, {"version": 2}, {"version": 1}, {"version": 1, "groups": {}, "base": 5}):
@@ -221,7 +207,7 @@ class VercelEntryPointTests(unittest.TestCase):
         with urllib.request.urlopen(self.urls["initial"]) as r:
             init = json.load(r)
             self.assertEqual(r.headers["Cache-Control"], "no-store")
-        state = {"version": 1, "groups": init["groups"], "base": init["groups"], "lists": init["lists"],
+        state = {"version": 1, "groups": init["groups"], "base": init["groups"],
                  "rawHash": init["hashes"]}
         req = urllib.request.Request(self.urls["call"], method="POST", data=json.dumps(
             {"method": "GET", "path": "/api/timetable", "query": {"location": ["central"], "date": ["2026-11-23"]},

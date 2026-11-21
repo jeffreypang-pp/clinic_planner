@@ -15,8 +15,7 @@ python -m unittest discover -s tests -t .
 | `planning.json` | regularly | opening hours (+ one-off date overrides), **treatments**, **doctor skills** |
 | `schedule.json` | constantly | **presence** (who is in which location each day), **blocked times** (per doctor / staff member / room), **bookings** |
 
-A fourth file, `treatment_lists.json`, holds **saved lists of treatments** (see below). It is separate from the three
-clinic data files above, and only written when you save a list.
+The Timetable tab's list of treatments is not part of these three files: it is saved to / loaded from a file of its own (see below).
 
 **Nothing is saved automatically.** Edits (ticks, bookings, blocks, hours, JSON edits) live in memory on the
 server. The top bar shows `● Unsaved: schedule.json (+3 −1)`; press **Save…** and confirm the dialog to write
@@ -84,8 +83,6 @@ or push to GitHub and "Import Project" in the Vercel dashboard (leave the framew
   (`resources.json`, `planning.json`, `schedule.json`). Put them in `clinic_data/` and commit; pushing redeploys with the new data.
   If a newer deployment's data differs from what your browser started from, the bar shows `⚠ Newer data deployed`, saving over
   it is refused unless you confirm, and **Reload deployed data** picks it up.
-* **Saved treatment lists** live in the browser only (per browser, not shared). A committed `clinic_data/treatment_lists.json`
-  is loaded as the starting set.
 * Each request carries the working data (well under Vercel's 4.5 MB request limit for a clinic this size).
 
 **Set the password** (see *Password protection* below): add `CLINIC_PASSWORD` under Project Settings → Environment
@@ -154,7 +151,6 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   A copy of **Book next** sits in the panel's header, which stays pinned (and the panel scrolls itself to the next row to
   fill in), so you can keep booking without scrolling.
   The list of treatments in the panel is saved and loaded with **Save to file… / Load from file…** (below; times, rooms, names, clients, clinics; not the bookings).
-  (The older named-lists feature — `treatment_lists.json`, `/api/lists` — is still in the server but no longer has buttons in the page.)
   each treatment in the list belongs to its own
   **clinic** (a *Clinic* select on each row; its rooms, available staff and start times follow that clinic, and changing it resets room, staff and doctor),
   so one list can span clinics. Each treatment can be **collapsed** (▾/▸) to a single line showing just its name (usually the room) and clinic, with a
@@ -202,8 +198,8 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
   tagged, and the dialog says which clinic files the current folder contains. Only folders are listed, never files. The chooser needs
   the server to list folders, so it is local-server only (on the Vercel deployment the browser's own folder picker is used instead).
 
-  *Directory save/load* covers `resources.json`, `planning.json` and `schedule.json` (not the saved treatment lists, which have their
-  own Save list / Load). **Save** writes a *copy*: type any directory (`~` and relative paths work; it is created if needed), you are
+  *Directory save/load* covers `resources.json`, `planning.json` and `schedule.json` (not the Timetable's list of treatments, which has its
+  own Save to file / Load from file). **Save** writes a *copy*: type any directory (`~` and relative paths work; it is created if needed), you are
   shown exactly which files are new, identical (left alone) or will be overwritten, and the data folder and your unsaved changes are
   untouched. **Load** replaces the working data with the three files in a directory (all three must be present and valid; nothing is
   changed if they aren't); like any edit it stays in memory, shown as unsaved changes, until you Save… in the top bar, and Discard goes
@@ -227,7 +223,6 @@ replaces the given groups in memory, validated together with the rest first),
 `GET /api/availability?treatment=&date=&start=HH:MM[&location=]`, `GET /api/slots?treatment=&date=[&location=]` (look-ups; the page no longer has a tab for them),
 `POST /api/list-file` (validate a list and return it as a file's text, or with `lenient` validate one read from a file; writes nothing) /
 `POST /api/list-export` (`directory`, `name`, `location_id`, `items`, optional `dry_run` / `overwrite`; local server only: write `<directory>/<name>.json`),
-`GET|PUT|DELETE /api/lists` (saved treatment lists; `PUT` takes `name`, `location_id` (default clinic), `items` (each may carry its own `location_id`), `overwrite`; `DELETE ?name=`),
 `GET|POST /api/bookings`, `DELETE /api/bookings/<id>`, `POST /api/book-list` (`location_id`, `date`, `items`, optional `dry_run`; an item is `{location_id?, numbing_minutes, doctor_minutes, staff_minutes, room_id, start, name?, client?, doctor_id?, staff?: {step: id | null}, treatment_id?}`, or a template `{treatment_id, start, client?}`), `POST /api/clear-day` (`location_id`, `date`, optional `dry_run`).
 
 ## Not modelled yet

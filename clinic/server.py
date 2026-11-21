@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth import Auth, denied, handle_auth_route, mode_info
 from .env import load_dotenv
-from .lists import TreatmentLists, render_list_file, safe_filename
+from .lists import render_list_file, safe_filename
 from .model import Clinic, ClinicError, Conflict, GROUP_FILES, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
@@ -35,7 +35,6 @@ class App:
     def __init__(self, path: str) -> None:
         self.path = path
         self.lock = threading.RLock()
-        self.lists = TreatmentLists(path)   # named treatment lists; saved only on request
         self.reload()
 
     def reload(self) -> None:
@@ -289,20 +288,7 @@ class App:
         return self.clinic.book_list(_need(body, "location_id"), _need(body, "date"), items,
                                      bool(body.get("dry_run")))
 
-    # ---- saved lists of treatments (the Timetable tab's "Add treatments" list) -----------
-    def get_lists(self, q, body):
-        return {"lists": self.lists.all(self.clinic), "file": self.lists.path}
-
-    def put_list(self, q, body):
-        """Save (or, with ``overwrite``, replace) a named list. Writes only treatment_lists.json."""
-        saved = self.lists.save(self.clinic, _need(body, "name"), _need(body, "location_id"),
-                                body.get("items"), bool(body.get("overwrite")))
-        return {"saved": saved["name"], "lists": self.lists.all(self.clinic)}
-
-    def delete_list(self, q, body):
-        self.lists.delete(_arg(q, "name"))
-        return {"lists": self.lists.all(self.clinic)}
-
+    # ---- lists of treatments (the Timetable tab's "Add treatments" list), saved as files -----------
     def post_list_file(self, q, body):
         """Validate a list and return it as a stand-alone file (``filename`` + ``text``) for the browser
         to download or write where the user chose.  With ``lenient`` it instead validates a list that was
@@ -329,9 +315,6 @@ class App:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ClinicError(f"{path.name} isn't valid JSON: {e}") from None
-        if isinstance(data, dict) and "lists" in data and "items" not in data:
-            raise ClinicError(f"{path.name} holds a whole set of saved lists (treatment_lists.json), not one list "
-                              "file. Use the dropdown to load one of those.")
         if not isinstance(data, dict) or data.get("kind") != "clinic-treatment-list" or not isinstance(data.get("items"), list):
             raise ClinicError(f"{path.name} isn't a treatment list file (the kind made by \"Save to file…\")")
         r = render_list_file(self.clinic, data.get("name") or path.stem, data.get("location_id"), data["items"], True)
@@ -457,9 +440,6 @@ ROUTES = [
     ("POST", r"/api/list-file", "post_list_file"),
     ("POST", r"/api/list-export", "post_list_export"),
     ("POST", r"/api/list-open", "post_list_open"),
-    ("GET", r"/api/lists", "get_lists"),
-    ("PUT", r"/api/lists", "put_list"),
-    ("DELETE", r"/api/lists", "delete_list"),
     ("POST", r"/api/clear-day", "post_clear_day"),
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/bookings/([\w-]+)/staff", "put_booking_staff"),
