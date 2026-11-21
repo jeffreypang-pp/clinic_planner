@@ -171,6 +171,129 @@ class DirectoryTests(unittest.TestCase):
         self.assertEqual(r["counts"]["doctors"], 3)
 
 
+class BrowseTests(DirectoryTests):
+    """The in-page folder chooser: list folders, create one, never list files."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp.name, "root")
+        for d in ("beta", "Alpha", "gamma/inner", ".hidden", "clinic_here"):
+            os.makedirs(os.path.join(self.root, d))
+        open(os.path.join(self.root, "a_file.txt"), "w").close()
+        for n in NAMES:
+            open(os.path.join(self.root, "clinic_here", n), "w").close()
+        open(os.path.join(self.root, "gamma", "resources.json"), "w").close()    # only one of three: not a clinic folder
+
+    def browse(self, path=None, hidden=False):
+        q = {}
+        if path is not None:
+            q["path"] = [path]
+        if hidden:
+            q["hidden"] = ["1"]
+        return dispatch(self.app, "GET", "/api/browse", q, None)
+
+    def test_lists_only_folders_sorted_and_hides_dotfolders(self):
+        status, r = self.browse(self.root)
+        self.assertEqual(status, 200)
+        self.assertEqual([e["name"] for e in r["entries"]], ["Alpha", "beta", "clinic_here", "gamma"])   # case-insensitive order
+        self.assertEqual(r["current"]["path"], os.path.realpath(self.root))
+        self.assertEqual(r["current"]["parent"], os.path.realpath(self.tmp.name))
+        self.assertTrue(r["current"]["writable"])
+        self.assertEqual(r["current"]["files"], [])
+        self.assertIsNone(r["requested_missing"])
+        status, r = self.browse(self.root, hidden=True)
+        self.assertIn(".hidden", [e["name"] for e in r["entries"]])
+
+    def test_clinic_folders_are_flagged_and_entries_carry_full_paths(self):
+        status, r = self.browse(self.root)
+        flags = {e["name"]: e["clinic"] for e in r["entries"]}
+        self.assertEqual(flags, {"Alpha": False, "beta": False, "clinic_here": True, "gamma": False})
+        self.assertEqual(r["entries"][0]["path"], os.path.join(os.path.realpath(self.root), "Alpha"))
+        status, inside = self.browse(os.path.join(self.root, "clinic_here"))
+        self.assertEqual(inside["current"]["files"], list(GROUP_FILES.values()))    # tells you what's in the current folder
+
+    def test_nonexistent_paths_fall_back_to_the_nearest_existing_folder(self):
+        wanted = os.path.join(self.root, "gamma", "new", "deeper")
+        status, r = self.browse(wanted)
+        self.assertEqual(status, 200)
+        self.assertEqual(r["current"]["path"], os.path.join(os.path.realpath(self.root), "gamma"))
+        self.assertEqual(r["requested_missing"], os.path.realpath(wanted))
+
+    def test_a_file_path_shows_its_folder(self):
+        status, r = self.browse(os.path.join(self.root, "a_file.txt"))
+        self.assertEqual(r["current"]["path"], os.path.realpath(self.root))
+
+    def test_defaults_tilde_and_shortcuts(self):
+        old_home = os.environ.get("HOME")
+        try:
+            os.environ["HOME"] = self.root
+            status, r = self.browse()
+            self.assertEqual(r["current"]["path"], os.path.realpath(self.root))              # no path = home
+            status, r = self.browse("~/gamma")
+            self.assertEqual(r["current"]["path"], os.path.join(os.path.realpath(self.root), "gamma"))
+            labels = {x["label"]: x["path"] for x in r["shortcuts"]}
+            self.assertEqual(labels["Data folder"], os.path.realpath(self.data))
+            self.assertEqual(labels["Home"], os.path.realpath(self.root))
+            self.assertIn("Working directory", labels)
+        finally:
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+
+    def test_the_filesystem_root_has_no_parent(self):
+        status, r = self.browse(os.path.abspath(os.sep))
+        self.assertEqual((status, r["current"]["parent"]), (200, None))
+
+    def test_unreadable_folders_and_bad_paths_are_reported(self):
+        import clinic.server as server
+        real = server.os.scandir
+
+        def denied(path):
+            raise PermissionError(13, "Permission denied")
+        server.os.scandir = denied
+        try:
+            status, r = self.browse(self.root)
+        finally:
+            server.os.scandir = real
+        self.assertEqual(status, 400)
+        self.assertIn("Can't read", r["error"])
+        self.assertEqual(self.browse("bad\0path")[0], 400)
+
+    def test_a_huge_folder_is_capped(self):
+        big = os.path.join(self.tmp.name, "big")
+        os.makedirs(big)
+        for i in range(App.MAX_BROWSE_ENTRIES + 5):
+            os.mkdir(os.path.join(big, f"d{i:04d}"))
+        status, r = self.browse(big)
+        self.assertEqual((len(r["entries"]), r["truncated"]), (App.MAX_BROWSE_ENTRIES, True))
+
+    def test_it_never_changes_anything(self):
+        self.browse(self.root)
+        self.assertEqual(Clinic.read_files(self.data), self.snapshot)
+        self.assertEqual(sorted(os.listdir(self.root)), sorted([".hidden", "Alpha", "a_file.txt", "beta", "clinic_here", "gamma"]))
+
+    # ---- new folder ------------------------------------------------------------------
+    def test_make_a_new_folder(self):
+        status, r = dispatch(self.app, "POST", "/api/mkdir", {}, {"path": self.root, "name": "  backups 2026  "})
+        self.assertEqual(status, 200)
+        self.assertEqual(r["path"], os.path.join(os.path.realpath(self.root), "backups 2026"))
+        self.assertTrue(os.path.isdir(r["path"]))
+        self.assertEqual(os.listdir(r["path"]), [])                            # empty: it creates nothing else
+
+    def test_new_folder_names_are_validated(self):
+        for bad in ("", "   ", ".", "..", "a/b", "a\\b", "../escape", "x" * 101, "nul\0byte", None, 5):
+            status, r = dispatch(self.app, "POST", "/api/mkdir", {}, {"path": self.root, "name": bad})
+            self.assertEqual(status, 400, repr(bad))
+        self.assertEqual(dispatch(self.app, "POST", "/api/mkdir", {}, {"path": self.root, "name": "beta"})[0], 400)   # exists
+        self.assertEqual(dispatch(self.app, "POST", "/api/mkdir", {}, {"path": os.path.join(self.root, "nope"), "name": "x"})[0], 400)
+        self.assertEqual(dispatch(self.app, "POST", "/api/mkdir", {}, {"path": os.path.join(self.root, "a_file.txt"), "name": "x"})[0], 400)
+        self.assertEqual(dispatch(self.app, "POST", "/api/mkdir", {}, {"name": "x"})[0], 400)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "escape")))      # nothing escaped the chosen folder
+
+    # (the inherited directory tests run again here: harmless, they use the same fixtures)
+
+
 class StatelessDirectoryTests(unittest.TestCase):
     """On Vercel the server can't see the user's computer, and must not read or write its own paths."""
 
@@ -189,6 +312,12 @@ class StatelessDirectoryTests(unittest.TestCase):
 
     def test_server_directories_are_refused(self):
         target = os.path.join(self.tmp.name, "should-not-exist")
+        out = handle_call({"method": "GET", "path": "/api/browse", "query": {"path": [self.tmp.name]}, "body": None, "state": self.state}, self.dir)
+        self.assertEqual(out["status"], 400)                                    # the server's filesystem is never listed
+        self.assertNotIn("entries", out["result"])
+        out = self.call("POST", "/api/mkdir", {"path": self.tmp.name, "name": "x"})
+        self.assertEqual(out["status"], 400)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "x")))
         for path in ("/api/export", "/api/import"):
             out = self.call("POST", path, {"directory": target})
             self.assertEqual(out["status"], 400, path)

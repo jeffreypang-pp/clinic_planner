@@ -176,6 +176,12 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 * **Setup & save** - **save a copy to / load from a directory you choose**, edit opening hours per weekday, and edit each of the three
   data files as JSON (add rooms, treatments, doctors, skills...), validate and apply (then Save… in the top bar); download/upload a file.
 
+  **Choose the directory** by typing a path or pressing **Browse…**, which opens a folder chooser: click through your folders
+  (Up, Home, the data folder, the working directory; Windows drives too), type a path and press Enter, show hidden folders,
+  create a **New folder…**, or pick a path that doesn't exist yet (it is created when you save). Folders already holding clinic files are
+  tagged, and the dialog says which clinic files the current folder contains. Only folders are listed, never files. The chooser needs
+  the server to list folders, so it is local-server only (on the Vercel deployment the browser's own folder picker is used instead).
+
   *Directory save/load* covers `resources.json`, `planning.json` and `schedule.json` (not the saved treatment lists, which have their
   own Save list / Load). **Save** writes a *copy*: type any directory (`~` and relative paths work; it is created if needed), you are
   shown exactly which files are new, identical (left alone) or will be overwritten, and the data folder and your unsaved changes are
@@ -189,6 +195,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 
 `GET /api/clinic` (merged view + the 3 groups + issues + unsaved/external files), `GET /api/status`, `GET /api/files` (the exact text of the three files),
 `POST /api/export` / `POST /api/import` (`directory`, optional `dry_run`; local server only: save a copy to / load from a directory),
+`GET /api/browse?path=[&hidden=1]` / `POST /api/mkdir` (`path`, `name`) (local server only: the folder chooser's listing and New folder),
 `POST /api/save` (`{"force": true}` to overwrite files changed on disk), `POST /api/discard`, `PUT /api/clinic` (`{"resources": {...}}` etc.;
 replaces the given groups in memory, validated together with the rest first),
 `GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,

@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 from .auth import Auth, denied, handle_auth_route, mode_info
 from .env import load_dotenv
 from .lists import TreatmentLists
-from .model import Clinic, ClinicError, Conflict, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
+from .model import Clinic, ClinicError, Conflict, GROUP_FILES, GROUPS, NotFound, WEEKDAYS, parse_date, parse_time
 from .sample import build_sample
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -101,6 +101,73 @@ class App:
     def _counts(clinic: Clinic) -> dict:
         return {"locations": len(clinic.locations), "rooms": len(clinic.rooms), "doctors": len(clinic.doctors),
                 "staff": len(clinic.staff), "treatments": len(clinic.treatments), "bookings": len(clinic.bookings)}
+
+    # ---- the in-page folder chooser (local server only) ----------------------------------
+    MAX_BROWSE_ENTRIES = 500
+
+    def get_browse(self, q, body):
+        """List the sub-folders of a directory so the page can offer a folder chooser.
+
+        ``path`` (default: home); if it doesn't exist we show the nearest folder that does and say
+        so.  Only directories are listed (hidden ones with ``hidden=1``); each is flagged when it
+        already holds clinic data files.  Local server only: the server is on the user's computer."""
+        raw = (q.get("path", [""])[0] or "").strip()
+        if "\0" in raw:
+            raise ClinicError("Bad path")
+        show_hidden = q.get("hidden", [""])[0] == "1"
+        requested = Path(os.path.expanduser(raw)).resolve() if raw else None
+        here = requested or Path.home().resolve()
+        while not here.exists() and here != here.parent:
+            here = here.parent
+        if here.is_file():
+            here = here.parent
+        try:
+            with os.scandir(here) as it:
+                subdirs = sorted((e for e in it if self._is_dir(e) and (show_hidden or not e.name.startswith("."))),
+                                 key=lambda e: e.name.lower())
+        except OSError as e:
+            raise ClinicError(f"Can't read {here}: {e.strerror or e}") from None
+        names = list(GROUP_FILES.values())
+        entries = [{"name": e.name, "path": str(Path(e.path)),
+                    "clinic": all(os.path.isfile(os.path.join(e.path, n)) for n in names)}
+                   for e in subdirs[:self.MAX_BROWSE_ENTRIES]]
+        shortcuts = [{"label": "Home", "path": str(Path.home())},
+                     {"label": "Data folder", "path": str(Path(self.path).resolve())},
+                     {"label": "Working directory", "path": str(Path.cwd())}]
+        if os.name == "nt":      # Windows: also offer the drives
+            shortcuts += [{"label": f"{c}:", "path": f"{c}:\\"} for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          if os.path.exists(f"{c}:\\")]
+        return {"current": {"path": str(here), "parent": str(here.parent) if here.parent != here else None,
+                            "files": [n for n in names if (here / n).is_file()],
+                            "writable": os.access(here, os.W_OK)},
+                "requested_missing": str(requested) if requested is not None and requested != here else None,
+                "entries": entries, "truncated": len(subdirs) > self.MAX_BROWSE_ENTRIES,
+                "shortcuts": shortcuts, "separator": os.sep}
+
+    @staticmethod
+    def _is_dir(entry) -> bool:
+        try:
+            return entry.is_dir()
+        except OSError:
+            return False
+
+    def post_mkdir(self, q, body):
+        """Create a new folder ``name`` inside the existing directory ``path`` (for the chooser)."""
+        parent = self._directory(_need(body, "path"))
+        if not parent.is_dir():
+            raise ClinicError(f"{parent} doesn't exist")
+        name = _need(body, "name")
+        if (not isinstance(name, str) or not name.strip() or len(name.strip()) > 100
+                or name.strip() in (".", "..") or any(c in name for c in '/\\\0')):
+            raise ClinicError("Give the new folder a plain name (no slashes), at most 100 characters")
+        target = parent / name.strip()
+        if target.exists():
+            raise ClinicError(f"{target} already exists")
+        try:
+            target.mkdir()
+        except OSError as e:
+            raise ClinicError(f"Can't create {target}: {e.strerror or e}") from None
+        return {"path": str(target.resolve())}
 
     def get_files(self, q, body):
         """The exact text of the three data files for the current working data (nothing is written)."""
@@ -276,6 +343,8 @@ ROUTES = [
     ("PUT", r"/api/clinic", "put_clinic"),
     ("POST", r"/api/save", "post_save"),
     ("GET", r"/api/files", "get_files"),
+    ("GET", r"/api/browse", "get_browse"),
+    ("POST", r"/api/mkdir", "post_mkdir"),
     ("POST", r"/api/export", "post_export"),
     ("POST", r"/api/import", "post_import"),
     ("POST", r"/api/discard", "post_discard"),

@@ -142,6 +142,19 @@
   #login input { width: 100%; margin: 12px 0 10px; padding: 9px 10px; font-size: 15px; }
   #login .btn { width: 100%; padding: 9px; }
   #login .err { color: var(--bad); min-height: 1.4em; margin-top: 8px; font-size: 13px; }
+  #dirpick { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.45); display: grid; place-items: center; padding: 16px; }
+  #dirpick[hidden] { display: none; }
+  #dirpick .box { width: 100%; max-width: 640px; max-height: 86vh; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  #dirpick h3 { margin: 0; }
+  #dirpick .dp-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  #dirpick .dp-bar input { flex: 1; min-width: 200px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  #dirpick .dp-list { flex: 1; min-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+  #dirpick .dp-item { display: flex; width: 100%; align-items: center; gap: 8px; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 7px 10px; cursor: pointer; font-size: 14px; }
+  #dirpick .dp-item:hover, #dirpick .dp-item:focus-visible { background: var(--bg); }
+  #dirpick .dp-item .tag { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); font-weight: 600; }
+  #dirpick .dp-item.new { color: var(--accent); font-weight: 600; }
+  #dirpick .dp-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #dirpick .dp-actions .spacer { flex: 1; }
   .dirbox { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
   .dirbox label { flex: 1; min-width: 260px; }
   .dirbox input { width: 100%; }
@@ -169,6 +182,19 @@
   <div class="box" id="login-setup" hidden><h2>Password not set up</h2>
     <div class="muted">This deployment needs a password before it will show any data. Set <code>CLINIC_PASSWORD</code>
       (Vercel: Project Settings → Environment Variables), then redeploy.</div></div>
+</div>
+<div id="dirpick" hidden role="dialog" aria-modal="true" aria-label="Choose a directory">
+  <div class="box">
+    <h3>Choose a directory</h3>
+    <div class="dp-bar" id="dp-shortcuts"></div>
+    <div class="dp-bar"><button class="btn secondary" id="dp-up" title="Go up one folder">↑ Up</button>
+      <input id="dp-input" spellcheck="false" autocomplete="off" title="Type a path and press Enter to go there"></div>
+    <div class="muted" id="dp-note"></div>
+    <div class="dp-list" id="dp-list"></div>
+    <div class="dp-actions"><label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)"><input type="checkbox" id="dp-hidden"> show hidden folders</label>
+      <button class="btn secondary" id="dp-new">New folder…</button><span class="spacer"></span>
+      <button class="btn secondary" id="dp-cancel">Cancel</button><button class="btn" id="dp-ok">Choose this folder</button></div>
+  </div>
 </div>
 <div id="banner"></div>
 <main id="main"></main>
@@ -836,8 +862,9 @@ async function viewSetup() {
           Chrome and Edge write straight into the folder you pick; other browsers download the files and ask you to choose the files when loading.</div>`
       : `<div class="dirbox"><label>Directory<input id="dir-path" list="dir-recent" value="${esc(recentDirs()[0] || "")}" placeholder="e.g. ~/clinic_backups/november   or   C:\\Users\\me\\clinic" spellcheck="false" autocomplete="off"></label>
           <datalist id="dir-recent">${recentDirs().map(d => `<option value="${esc(d)}">`).join("")}</datalist>
+          <button class="btn secondary" id="dir-browse" title="Choose a folder by clicking through your folders">Browse…</button>
           <button class="btn" id="dir-save">Save to this directory…</button><button class="btn secondary" id="dir-load">Load from this directory…</button></div>
-        <div class="muted" style="margin-top:8px"><b>Save</b> writes a <i>copy</i> of ${FILE_NOTE} into the directory (created if needed); the data folder (<code>${esc(S.dataDir || "clinic_data")}</code>) and your unsaved changes are not affected.
+        <div class="muted" style="margin-top:8px">Type a path or press <b>Browse…</b> to choose a folder. <b>Save</b> writes a <i>copy</i> of ${FILE_NOTE} into the directory (created if needed); the data folder (<code>${esc(S.dataDir || "clinic_data")}</code>) and your unsaved changes are not affected.
           <b>Load</b> replaces the working data with the files in that directory; like any edit it stays in memory (shown as unsaved changes) until you press <b>Save…</b> in the top bar, and Discard goes back.
           A relative path starts from where the server was started; <code>~</code> means your home folder. You're asked to confirm before anything is written or replaced.</div>`}
     </div>
@@ -897,6 +924,9 @@ async function viewSetup() {
     a.href = URL.createObjectURL(new Blob([$("#json").value + "\n"], {type: "application/json"}));
     a.download = GROUPS[S.setupGroup][1]; a.click(); };
   $("#j-up").onchange = async e => { const f = e.target.files[0]; if (f) $("#json").value = await f.text(); };
+  if ($("#dir-browse")) $("#dir-browse").onclick = () => guard(async () => {
+    const chosen = await openDirPicker($("#dir-path").value); if (chosen) $("#dir-path").value = chosen;
+  });
   $("#dir-save").onclick = () => guard(S.stateless ? saveToFolder : saveToDirectory);
   $("#dir-load").onclick = () => guard(S.stateless ? loadFromFolder : loadFromDirectory);
 }
@@ -915,8 +945,53 @@ const replaceWarning = () => S.unsaved.length ? `\n\nYour unsaved changes in ${S
 // local server: the typed directory is read / written by the server (it runs on this computer)
 function typedDirectory() {
   const dir = $("#dir-path").value.trim();
-  if (!dir) throw new Error("Enter a directory first.");
+  if (!dir) throw new Error("Enter a directory, or press Browse… to choose one.");
   return dir;
+}
+
+// The folder chooser: the server (which runs on this computer) lists folders; resolves with the chosen absolute path, or null.
+function openDirPicker(start) {
+  return new Promise(resolve => {
+    const el = $("#dirpick"), list = $("#dp-list");
+    let here = null, hidden = false, requestedMissing = null;
+    const finish = value => { el.hidden = true; document.removeEventListener("keydown", onKey); resolve(value); };
+    const onKey = e => { if (e.key === "Escape") finish(null); };
+    async function go(path) {
+      try {
+        const d = await api("GET", `/api/browse?path=${encodeURIComponent(path || "")}${hidden ? "&hidden=1" : ""}`);
+        here = d.current; requestedMissing = d.requested_missing;
+        $("#dp-input").value = here.path; $("#dp-up").disabled = !here.parent;
+        $("#dp-shortcuts").innerHTML = d.shortcuts.map(x => `<button class="btn secondary" data-go="${esc(x.path)}" title="${esc(x.path)}">${esc(x.label)}</button>`).join("");
+        $("#dp-note").textContent = requestedMissing ? `“${requestedMissing}” doesn't exist yet. Showing the nearest folder that does.`
+          : here.files.length ? `This folder has ${here.files.join(", ")}.` : "No clinic files in this folder.";
+        $("#dp-note").style.color = requestedMissing ? "var(--bad)" : "";
+        $("#dp-ok").textContent = "Choose this folder";
+        list.innerHTML = (requestedMissing ? `<button class="dp-item new" data-pick="${esc(requestedMissing)}">＋ Use “${esc(requestedMissing)}” (will be created when you save)</button>` : "") +
+          (d.entries.length ? d.entries.map(x => `<button class="dp-item" data-go="${esc(x.path)}">📁 ${esc(x.name)}${x.clinic ? `<span class="tag">clinic data</span>` : ""}</button>`).join("")
+                            : `<div class="muted" style="padding:12px">No sub-folders here.</div>`) +
+          (d.truncated ? `<div class="muted" style="padding:8px 10px">Only the first ${d.entries.length} folders are shown; type a path above to go further.</div>` : "");
+        list.scrollTop = 0;
+      } catch (e) { fail(e); }
+    }
+    el.onclick = e => { if (e.target === el) finish(null); };
+    $("#dp-shortcuts").onclick = list.onclick = e => {
+      const b = e.target.closest("button"); if (!b) return;
+      if (b.dataset.pick) finish(b.dataset.pick); else if (b.dataset.go) go(b.dataset.go);
+    };
+    $("#dp-up").onclick = () => here?.parent && go(here.parent);
+    $("#dp-input").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); go($("#dp-input").value); } };
+    $("#dp-hidden").onchange = e => { hidden = e.target.checked; go(here?.path); };
+    $("#dp-cancel").onclick = () => finish(null);
+    $("#dp-ok").onclick = () => finish(here?.path || null);
+    $("#dp-new").onclick = () => guard(async () => {
+      const name = prompt(`Name for the new folder inside\n${here.path}`); if (!name || !name.trim()) return;
+      const r = await api("POST", "/api/mkdir", { path: here.path, name }); await go(r.path);
+    });
+    $("#dp-hidden").checked = false; el.hidden = false; document.addEventListener("keydown", onKey);
+    $("#dp-input").value = ""; $("#dp-note").textContent = ""; $("#dp-shortcuts").innerHTML = "";      // don't flash the last visit's folder
+    list.innerHTML = `<div class="muted" style="padding:12px">Loading…</div>`;
+    go(start);
+  });
 }
 async function saveToDirectory() {
   const dir = typedDirectory();

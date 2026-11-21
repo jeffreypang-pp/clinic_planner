@@ -103,6 +103,12 @@ class StatelessApp(App):
         self.canon = self.clinic.render_files()
         return {"saved": sorted(files), "files": files, **self.get_clinic(q, None)}
 
+    def get_browse(self, q, body):
+        raise ClinicError(_NO_SERVER_DIRS)
+
+    def post_mkdir(self, q, body):
+        raise ClinicError(_NO_SERVER_DIRS)
+
     def post_export(self, q, body):
         raise ClinicError(_NO_SERVER_DIRS)
 
