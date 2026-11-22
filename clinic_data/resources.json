@@ -62,11 +62,27 @@
   "doctors": [
     {
       "id": "harvey",
-      "name": "Dr Harvey"
+      "name": "Dr Harvey",
+      "usual_locations": {
+        "mon": "asia_square",
+        "tue": "orchard",
+        "wed": "asia_square",
+        "thu": "asia_square",
+        "fri": "orchard",
+        "sat": "asia_square"
+      }
     },
     {
       "id": "lim",
-      "name": "Dr Lim"
+      "name": "Dr Lim",
+      "usual_locations": {
+        "mon": "orchard",
+        "tue": "asia_square",
+        "wed": "orchard",
+        "thu": "orchard",
+        "fri": "asia_square",
+        "sat": "orchard"
+      }
     }
   ],
   "staff": [
@@ -77,12 +93,12 @@
     {
       "id": "aurore",
       "name": "Aurore",
-      "home_location_id": "asia_square"
+      "usual_location_id": "asia_square"
     },
     {
       "id": "lynn",
       "name": "Lynn",
-      "home_location_id": "asia_square"
+      "usual_location_id": "asia_square"
     },
     {
       "id": "renee",
@@ -91,7 +107,7 @@
     {
       "id": "cherry",
       "name": "Cherry",
-      "home_location_id": "orchard"
+      "usual_location_id": "orchard"
     },
     {
       "id": "eva",

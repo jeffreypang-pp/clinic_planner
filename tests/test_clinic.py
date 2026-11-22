@@ -814,33 +814,51 @@ class BookListTests(unittest.TestCase):
         self.assertEqual(sorted(b.date for b in self.c.bookings.values()), [MON, tue])
         self.assertTrue(any("Bad date" in m for m in r["results"][2]["reasons"]))
 
-    def test_staff_attached_to_a_location_can_only_be_there(self):
-        self.c.staff["s1"].home_location_id = "a"                      # permanently at A; s2 floats
-        tick(self.c, "staff", "s1", "a")
-        tick(self.c, "staff", "s2", "b")                               # floaters can be anywhere
-        with self.assertRaises(ClinicError) as cm:
-            tick(self.c, "staff", "s1", "b")
-        self.assertIn("permanently attached to A", str(cm.exception))
-        self.assertEqual(self.c.presence_at("staff", "s1", MON), "a")  # the refusal changed nothing
-        tick(self.c, "staff", "s1", None)                              # not working that day is always fine
+    def test_usual_locations_are_defaults_not_restrictions(self):
+        self.c.staff["s1"].usual_location_id = "a"
+        tick(self.c, "staff", "s1", "b")                               # an exception: allowed
+        self.assertEqual(self.c.presence_at("staff", "s1", MON), "b")
         rows = {p["id"]: p for p in self.c.timetable("a", MON)["staff"]}
-        self.assertEqual((rows["s1"]["home"], rows["s2"]["home"]), ("a", None))
-        self.assertEqual({p["id"]: p["home"] for p in self.c.roster(MON, 1)["people"]}["s1"], "a")
+        self.assertEqual((rows["s1"]["usual"], rows["s2"]["usual"]), ("a", None))
 
-    def test_a_home_location_survives_save_and_load_and_must_exist(self):
+    def test_apply_usual_ticks_people_in_but_keeps_exceptions_and_closed_days(self):
+        wed = date(2026, 11, 25)
         self.c.presence.clear()
-        self.c.staff["s1"].home_location_id = "b"
+        self.c.staff["s1"].usual_location_id = "a"
+        self.c.doctors["d1"].usual_locations = {0: "a", 2: "b"}        # Mondays at A, Wednesdays at B
+        self.c.locations["b"].opening_hours = {0: (36, 76), 2: (36, 76)}
+        tick(self.c, "staff", "s1", "b", day=MON)                      # an exception on Monday
+        r = self.c.apply_usual(MON, wed)
+        self.assertEqual(self.c.presence_at("staff", "s1", MON), "b")  # kept
+        self.assertEqual(self.c.presence_at("doctor", "d1", MON), "a")
+        self.assertEqual(self.c.presence_at("doctor", "d1", wed), "b")
+        self.assertIsNone(self.c.presence_at("doctor", "d1", date(2026, 11, 24)))      # no usual place on Tuesday
+        self.assertEqual((r["set"], r["kept"]), (2, 1))
+        self.assertEqual(self.c.presence_at("staff", "s1", wed), None)  # A is closed on Wednesdays (test clinic: Mondays only)
+        self.assertEqual(r["closed"], 2)                                # s1 usually at A: closed Tuesday and Wednesday
+        r = self.c.apply_usual(MON, MON, overwrite=True)               # overwrite replaces the exception
+        self.assertEqual(self.c.presence_at("staff", "s1", MON), "a")
+        self.assertEqual(self.c.apply_usual(MON, MON, location_id="b", dry_run=True)["set"], 0)
+        with self.assertRaises(ClinicError):
+            self.c.apply_usual(wed, MON)
+        with self.assertRaises(ClinicError):
+            self.c.apply_usual(MON, date(2028, 1, 1))
+
+    def test_usual_locations_survive_save_and_load_and_are_validated(self):
+        self.c.staff["s1"].usual_location_id = "b"
+        self.c.doctors["d1"].usual_locations = {1: "a", 4: "b"}
         again = Clinic.from_groups(self.c.to_groups())
-        self.assertEqual((again.staff["s1"].home_location_id, again.staff["s2"].home_location_id), ("b", None))
-        self.assertNotIn("home_location_id", self.c.to_groups()["resources"]["staff"][1])   # floaters carry no extra key
-        groups = self.c.to_groups()
-        groups["resources"]["staff"][0]["home_location_id"] = "nowhere"
-        with self.assertRaises(ClinicError):
-            Clinic.from_groups(groups)
-        groups = self.c.to_groups()                                    # a schedule that puts them elsewhere is refused on load
-        groups["schedule"]["presence"] = {str(MON): {"doctors": {}, "staff": {"s1": "a"}}}      # s1 is attached to B
-        with self.assertRaises(ClinicError):
-            Clinic.from_groups(groups)
+        self.assertEqual(again.staff["s1"].usual_location_id, "b")
+        self.assertEqual(again.doctors["d1"].usual_locations, {1: "a", 4: "b"})
+        res = self.c.to_groups()["resources"]
+        self.assertEqual(next(d for d in res["doctors"] if d["id"] == "d1")["usual_locations"], {"tue": "a", "fri": "b"})
+        self.assertNotIn("usual_location_id", res["staff"][1])         # no usual place: no extra key
+        for bad in ({"usual_location_id": "nowhere"}, {"usual_locations": {"funday": "a"}},
+                    {"usual_locations": {"mon": "nowhere"}}, {"usual_locations": ["a"]}):
+            groups = self.c.to_groups()
+            groups["resources"]["staff"][0].update(bad)
+            with self.assertRaises(ClinicError, msg=str(bad)):
+                Clinic.from_groups(groups)
 
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},

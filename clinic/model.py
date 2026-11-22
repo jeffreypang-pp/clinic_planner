@@ -208,13 +208,31 @@ class Doctor:
     id: str
     name: str
     treatments: set[str] = field(default_factory=set)
+    usual_location_id: str | None = None                                       # where they usually are
+    usual_locations: dict[int, str] = field(default_factory=dict)              # ...or per weekday (0 = Monday)
 
 
 @dataclass
 class Staff:
     id: str
     name: str
-    home_location_id: str | None = None     # permanently attached to this location (None = can float between locations)
+    usual_location_id: str | None = None                                       # where they usually are
+    usual_locations: dict[int, str] = field(default_factory=dict)              # ...or per weekday (0 = Monday)
+
+
+def usual_location(person, day: Date) -> str | None:
+    """Where a doctor / staff member usually is on ``day``: their weekday entry, else their general one.
+    Only a default for ticking people in (``Clinic.apply_usual``); the roster itself is explicit."""
+    return person.usual_locations.get(day.weekday(), person.usual_location_id)
+
+
+def _usual_json(person) -> dict:
+    out = {}
+    if person.usual_location_id:
+        out["usual_location_id"] = person.usual_location_id
+    if person.usual_locations:
+        out["usual_locations"] = {WEEKDAYS[wd]: loc for wd, loc in sorted(person.usual_locations.items())}
+    return out
 
 
 @dataclass
@@ -330,16 +348,68 @@ class Clinic:
         any location).  Replaces wherever they were that day: one location per day.
         Existing bookings are never touched; see ``issues()``."""
         day = parse_date(day)
-        person = self._get(self._people(role), person_id, role)
+        self._get(self._people(role), person_id, role)
         if location_id is not None:
             self._get(self.locations, location_id, "location")
-            home = getattr(person, "home_location_id", None)
-            if home and location_id != home:
-                raise ClinicError(f"{person.name} is permanently attached to {self.locations[home].name} "
-                                  f"and can't be put at {self.locations[location_id].name}")
             self.presence[(role, person_id, day)] = location_id
         else:
             self.presence.pop((role, person_id, day), None)
+
+    def _parse_usual(self, entry: dict, what: str) -> tuple[str | None, dict[int, str]]:
+        """``usual_location_id`` and/or ``usual_locations`` ({"mon": location_id, ...}) of a person's entry."""
+        general = entry.get("usual_location_id") or None
+        if general is not None and general not in self.locations:
+            raise ClinicError(f"{what}: unknown usual_location_id {general!r}")
+        per_day = entry.get("usual_locations") or {}
+        if not isinstance(per_day, dict):
+            raise ClinicError(f"{what}: usual_locations must be like {{\"mon\": \"location_id\"}}")
+        out: dict[int, str] = {}
+        for key, loc in per_day.items():
+            if key not in WEEKDAYS:
+                raise ClinicError(f"{what}: usual_locations has {key!r}; use {', '.join(WEEKDAYS)}")
+            if loc not in self.locations:
+                raise ClinicError(f"{what}: usual_locations {key}: unknown location {loc!r}")
+            out[WEEKDAYS.index(key)] = loc
+        return general, out
+
+    def apply_usual(self, start, end=None, location_id: str | None = None, overwrite: bool = False,
+                    dry_run: bool = False) -> dict:
+        """Tick people in at their usual location for every day from ``start`` to ``end`` (inclusive).
+
+        * a day is skipped for a person when their usual location is closed that day;
+        * days where the person is already ticked in somewhere (an exception, or already right)
+          are kept unless ``overwrite``;
+        * ``location_id`` limits it to people whose usual location that day is that one.
+        Returns ``{"set": n, "kept": n, "closed": n}``: people-days ticked in, left alone, and
+        skipped because their usual location is closed."""
+        first = parse_date(start)
+        last = parse_date(end) if end else first
+        if last < first:
+            raise ClinicError("The last date is before the first date")
+        if (last - first).days >= 366:
+            raise ClinicError("At most 366 days at once")
+        if location_id is not None:
+            self._get(self.locations, location_id, "location")
+        counts = {"set": 0, "kept": 0, "closed": 0}
+        day = first
+        while day <= last:
+            for role, people in (("doctor", self.doctors), ("staff", self.staff)):
+                for p in people.values():
+                    loc = usual_location(p, day)
+                    if not loc or (location_id and loc != location_id):
+                        continue
+                    if self.locations[loc].hours_on(day) is None:
+                        counts["closed"] += 1
+                        continue
+                    here = self.presence.get((role, p.id, day))
+                    if here == loc or (here and not overwrite):
+                        counts["kept"] += 1
+                        continue
+                    counts["set"] += 1
+                    if not dry_run:
+                        self.set_presence(role, p.id, day, loc)
+            day += timedelta(days=1)
+        return counts
 
     def presence_at(self, role: str, person_id: str, day) -> str | None:
         return self.presence.get((role, person_id, parse_date(day)))
@@ -825,9 +895,8 @@ class Clinic:
                         tag = f"booked:{b.id}:{step}" if b.location_id == location_id else f"away:{b.location_id}"
                         for i in range(a, e):
                             cells[i] = tag
-            home = getattr(p, "home_location_id", None)
             return {"id": p.id, "name": p.name, "cells": cells,
-                    "here": at == location_id, "at": at, "home": home}
+                    "here": at == location_id, "at": at, "usual": usual_location(p, day)}
 
         def room_row(room):
             cells = with_blocks("room", room.id, list(open_cells))
@@ -860,7 +929,8 @@ class Clinic:
         start = parse_date(start)
         dates = [start + timedelta(days=i) for i in range(days)]
         def row(role, p):
-            return {"role": role, "id": p.id, "name": p.name, "home": getattr(p, "home_location_id", None),
+            return {"role": role, "id": p.id, "name": p.name, **_usual_json(p),
+                    "usual": [usual_location(p, d) for d in dates],
                     "at": [self.presence.get((role, p.id, d)) for d in dates]}
         return {"dates": [d.isoformat() for d in dates],
                 "people": [row("doctor", d) for d in self.doctors.values()]
@@ -989,10 +1059,9 @@ class Clinic:
                 "staff_minutes": t.staff_slots * SLOT_MINUTES,
                 "required_equipment": sorted(t.required_equipment),
             } for t in self.treatments.values()],
-            "doctors": [{"id": d.id, "name": d.name, "treatments": sorted(d.treatments)}
+            "doctors": [{"id": d.id, "name": d.name, "treatments": sorted(d.treatments), **_usual_json(d)}
                         for d in self.doctors.values()],
-            "staff": [{"id": s.id, "name": s.name, **({"home_location_id": s.home_location_id} if s.home_location_id else {})}
-                      for s in self.staff.values()],
+            "staff": [{"id": s.id, "name": s.name, **_usual_json(s)} for s in self.staff.values()],
             "presence": presence,
             "blocks": self._blocks_json(),
             "bookings": [{"id": b.id, "name": b.name, "treatment_id": b.treatment_id,
@@ -1082,15 +1151,12 @@ class Clinic:
             for tid in skills:
                 if tid not in c.treatments:
                     raise ClinicError(f"Doctor {did}: unknown treatment {tid!r}")
-            c.doctors[did] = Doctor(did, need(d, "name", f"doctor {did}"), skills)
+            c.doctors[did] = Doctor(did, need(d, "name", f"doctor {did}"), skills, *c._parse_usual(d, f"Doctor {did}"))
 
         for s in data.get("staff", []):
             sid = need(s, "id", "staff")
             unique(c.staff, sid, "staff")
-            home = s.get("home_location_id") or None
-            if home is not None and home not in c.locations:
-                raise ClinicError(f"Staff {sid}: unknown home_location_id {home!r}")
-            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"), home)
+            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"), *c._parse_usual(s, f"Staff {sid}"))
 
         for day, entry in (data.get("presence") or {}).items():
             extra = set(entry) - {"doctors", "staff"}
@@ -1150,7 +1216,7 @@ class Clinic:
             "resources": {
                 "version": FORMAT_VERSION,
                 "locations": [{"id": l["id"], "name": l["name"], "rooms": l["rooms"]} for l in d["locations"]],
-                "doctors": [{"id": x["id"], "name": x["name"]} for x in d["doctors"]],
+                "doctors": [{k: v for k, v in x.items() if k != "treatments"} for x in d["doctors"]],
                 "staff": d["staff"],
             },
             "planning": {
