@@ -141,6 +141,8 @@
   .bk-step select, td select.assign { max-width: 150px; font-size: 12px; padding: 2px 4px; }
   .tt-row.total-row { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
   .tt-row.total-row .tt-label { font-weight: 600; }
+  .tt-row.skill-head { margin-top: 4px; }
+  .tt-row.skill-row .tt-label { padding-left: 22px; }
   .cell.tot { text-align: center; line-height: 26px; font-size: 11px; font-weight: 700; }
   .cell.tot.none { background: transparent; border: 1px dashed var(--line); }
   .cell.tot.ok { background: var(--free); border: 1px solid var(--free-line); }
@@ -485,6 +487,23 @@ async function viewTimetable() {
     }
     return html + "</div>";
   }
+  // one row per equipment that needs trained staff: how many trained staff the treatments need in each block (collapsible as a group)
+  function skillRowsHtml() {
+    const rows = t.skill_rows || []; if (!rows.length) return "";
+    const open = !S.hideSkillRows;
+    let html = `<div class="tt-row skill-head" style="${cols}"><div class="tt-label"><button class="link tog" data-skilltoggle title="${open ? "Collapse" : "Show"} the rows for staff trained on equipment">${open ? "▾" : "▸"}</button> <b>Trained staff</b> <small>${rows.length} equipment${open ? "" : " (collapsed)"}</small></div></div>`;
+    if (!open) return html;
+    for (const r of rows) {
+      html += `<div class="tt-row skill-row" style="${cols}"><div class="tt-label" title="Trained staff needed in each 15-minute block for treatments in rooms with ${esc(r.name)} (doctor and staff steps), against trained staff ticked in and not blocked">${esc(r.name)} staff <small>needed</small></div>`;
+      for (let i = lo; i < hi; i++) {
+        const need = r.needed[i], have = r.available[i];
+        const cls = need === 0 ? "none" : need > have ? "over" : need === have ? "full" : "ok";
+        html += `<div class="cell tot ${cls}" title="${slotStr(i)} — ${need} ${esc(r.name)}-trained staff needed, ${have} available${need > have ? " (shortage)" : need && need === have ? " (all in use)" : ""}">${need || ""}</div>`;
+      }
+      html += "</div>";
+    }
+    return html;
+  }
   const section = (title, rows, sub, role) => `<h4>${title}</h4>` + (rows.length ? rows.map(r => rowHtml(r, sub?.(r), role)).join("") : `<div class="muted">none</div>`);
   const people = list => [...list.filter(r => r.here), ...list.filter(r => !r.here)];
   // the small text after a name: where they usually are (doctors: on this weekday), and how today differs
@@ -509,7 +528,7 @@ async function viewTimetable() {
     </div>
     <div class="card tt">${header}
       ${section("Doctors", people(t.doctors), away, "doctor")}
-      ${section("Staff", people(t.staff), away, "staff")}${totalRowHtml()}
+      ${section("Staff", people(t.staff), away, "staff")}${totalRowHtml()}${skillRowsHtml()}
       ${section("Treatment rooms", t.rooms, null, "room")}
     </div>
     <div id="editbar" class="card" ${S.editAvail ? "" : "hidden"}></div>
@@ -543,6 +562,7 @@ async function viewTimetable() {
     } catch (err) { fail(err); try { await viewTimetable(); } catch (e) {} }
   };
   $(".tt").onclick = e => {
+    if (e.target.closest("[data-skilltoggle]")) { S.hideSkillRows = !S.hideSkillRows; viewTimetable(); return; }
     if (S.editAvail) return;
     const c = e.target.closest(".cell.free"); if (!c) return;
     const row = c.closest(".tt-row");   // use this time (and this room, if it is a room row) for the next treatment

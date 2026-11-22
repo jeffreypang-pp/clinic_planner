@@ -545,6 +545,19 @@ class Clinic:
         order = sorted(range(len(needs)), key=lambda d: -len(needs[d]))   # the pickiest steps first
         return not all(place(d, set()) for d in order)
 
+    def skill_rows(self, loc_id: str, day: Date) -> list[dict]:
+        """For each equipment that needs training and is in a room at the location: per slot, how many
+        trained staff the treatments need (named or not) and how many trained staff are available."""
+        tags = sorted({t for r in self.rooms.values() if r.location_id == loc_id
+                       for t in r.equipment & self.training_equipment})
+        if not tags:
+            return []
+        demands, pool = self._slot_demands(loc_id, day), self._staff_pool(loc_id, day)
+        return [{"tag": tag, "name": _pretty([tag])[0],
+                 "needed": [sum(1 for _sid, skills in demands[i] if tag in skills) for i in range(SLOTS_PER_DAY)],
+                 "available": [sum(1 for sid in pool[i] if tag in self.staff[sid].skills) for i in range(SLOTS_PER_DAY)]}
+                for tag in tags]
+
     def skill_short(self, loc_id: str, day: Date) -> list[bool]:
         """Per slot: the treatments need trained staff that aren't there (count-wise or skill-wise)."""
         out = [False] * SLOTS_PER_DAY
@@ -1043,6 +1056,8 @@ class Clinic:
             "staff_total": {"needed": self.staff_demand(location_id, day),
                             "available": self.staff_capacity(location_id, day),
                             "skill_short": self.skill_short(location_id, day)},
+            # one row per equipment that needs trained staff: trained staff needed vs available, per slot
+            "skill_rows": self.skill_rows(location_id, day),
             "rooms": [room_row(r) for r in self.rooms.values() if r.location_id == location_id],
             "bookings": [self.describe_booking(b) for b in sorted(here, key=lambda b: b.start)],
         }

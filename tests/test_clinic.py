@@ -939,6 +939,20 @@ class BookListTests(unittest.TestCase):
         self.assertTrue(any("Not enough staff trained in LASER" in i for i in out), out)
         self.assertTrue(any(self.c.timetable("a", MON)["staff_total"]["skill_short"]))
 
+    def test_trained_staff_rows_count_needed_and_available_per_equipment(self):
+        self.assertEqual(self.c.timetable("a", MON)["skill_rows"], [])                 # nothing needs training
+        self.trained_laser()
+        self.assertEqual(self.c.timetable("b", MON)["skill_rows"], [])                 # no such room at B
+        row = self.c.timetable("a", MON)["skill_rows"][0]
+        self.assertEqual((row["tag"], row["name"]), ("laser", "LASER"))
+        self.assertEqual(max(row["needed"]), 0)
+        self.assertEqual(row["available"][t("10:00")], 1)                              # s1 only: s2 isn't trained
+        self.c.book_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser")               # numbing 10:00, doctor 10:15-10:45, staff 10:45-11:00
+        row = self.c.timetable("a", MON)["skill_rows"][0]
+        self.assertEqual([row["needed"][t(x)] for x in ("10:00", "10:15", "10:30", "10:45", "11:00")], [0, 1, 1, 1, 0])   # numbing needs no training
+        self.c.set_blocked("staff", "s1", MON, t("10:15"), t("10:30"), True)
+        self.assertEqual(self.c.timetable("a", MON)["skill_rows"][0]["available"][t("10:15")], 0)
+
     def test_training_can_be_edited(self):
         self.c.set_training(["laser"], {"s1": ["laser"]})
         self.assertEqual((self.c.training_equipment, self.c.staff["s1"].skills, self.c.staff["s2"].skills), ({"laser"}, {"laser"}, set()))
