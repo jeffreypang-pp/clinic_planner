@@ -76,15 +76,26 @@
     },
     {
       "id": "aurore",
-      "name": "Aurore"
+      "name": "Aurore",
+      "home_location_id": "asia_square"
     },
     {
       "id": "lynn",
-      "name": "Lynn"
+      "name": "Lynn",
+      "home_location_id": "asia_square"
     },
     {
       "id": "renee",
       "name": "Renee"
+    },
+    {
+      "id": "cherry",
+      "name": "Cherry",
+      "home_location_id": "orchard"
+    },
+    {
+      "id": "eva",
+      "name": "Eva"
     }
   ]
 }

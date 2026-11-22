@@ -445,7 +445,8 @@ async function viewTimetable() {
     // doctors/staff get a tick box: ticked = in THIS location today (at most one location per day)
     const tickTitle = r.here ? `In ${t.location} today. Untick if they are not in any location.`
       : r.at ? `At ${locName(r.at)} today. Tick to move them to ${t.location}.` : `Not in any location today. Tick to put them in ${t.location}.`;
-    const tick = role === "room" ? "" : `<input type="checkbox" class="here" data-role="${role}" data-id="${r.id}" ${r.here ? "checked" : ""} title="${esc(tickTitle)}">`;
+    const fixedElsewhere = !!r.home && r.home !== S.location;   // permanently attached to another location: can't be put here
+    const tick = role === "room" ? "" : `<input type="checkbox" class="here" data-role="${role}" data-id="${r.id}" ${r.here ? "checked" : ""} ${fixedElsewhere ? "disabled" : ""} title="${esc(fixedElsewhere ? `${r.name} is permanently attached to ${locName(r.home)}, so can't be put at ${t.location}.` : tickTitle)}">`;
     let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name)}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
     for (let i = lo; i < hi; ) {
       const c = r.cells[i];
@@ -477,7 +478,7 @@ async function viewTimetable() {
   }
   const section = (title, rows, sub, role) => `<h4>${title}</h4>` + (rows.length ? rows.map(r => rowHtml(r, sub?.(r), role)).join("") : `<div class="muted">none</div>`);
   const people = list => [...list.filter(r => r.here), ...list.filter(r => !r.here)];
-  const away = r => r.here ? "" : r.at ? `(at ${locName(r.at)})` : "(off today)";
+  const away = r => r.here ? "" : r.home && r.home !== S.location ? `(${locName(r.home)} only)` : r.at ? `(at ${locName(r.at)})` : "(off today)";
 
   $("#main").innerHTML = `<div class="tt-layout"><div class="tt-main">
     <div class="row">
@@ -882,8 +883,8 @@ async function viewRoster() {
   F.who ||= everyone[0]?.key;
   const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   const cell = (p, i) => `<td><select data-role="${p.role}" data-id="${p.id}" data-date="${roster.dates[i]}" class="${p.at[i] ? "set" : ""}">
-      <option value="">—</option>${locs().map(l => `<option value="${l.id}" ${p.at[i] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></td>`;
-  const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
+      <option value="">—</option>${locs().filter(l => !p.home || l.id === p.home).map(l => `<option value="${l.id}" ${p.at[i] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></td>`;
+  const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}${p.home ? ` <span class="muted" title="Permanently attached to ${esc(clinicName(p.home))}">(${esc(clinicName(p.home))})</span>` : ""}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
   $("#main").innerHTML = `
     <div class="card"><h3>Roster · week of ${esc(roster.dates[0])}</h3>
       <div class="row"><button class="btn secondary" data-week="-7">← Previous week</button>
@@ -897,7 +898,7 @@ async function viewRoster() {
     <div class="card"><h3>Set a location for many days</h3>
       <div class="row">
         <label>Who <select id="f-who">${everyone.map(p => `<option value="${p.key}" ${p.key === F.who ? "selected" : ""}>${esc(p.name)} (${p.role})</option>`).join("")}</select></label>
-        <label>Location <select id="f-loc"><option value="">— not in any location</option>${locs().map(l => `<option value="${l.id}" ${l.id === F.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
+        <label>Location <select id="f-loc"><option value="">— not in any location</option>${locs().filter(l => !everyone.find(x => x.key === F.who)?.home || l.id === everyone.find(x => x.key === F.who).home).map(l => `<option value="${l.id}" ${l.id === F.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
         <label>First date <input type="date" id="f-from" value="${F.from}"></label>
         <label>Last date <input type="date" id="f-to" value="${F.to}"></label>
         <div><div class="muted" style="font-size:12px;margin-bottom:3px">On weekdays</div><div class="days">
@@ -919,7 +920,8 @@ async function viewRoster() {
   $("#main").onchange = e => { const t = e.target;
     if (t.dataset.assign) return guard(async () => { await assignStaffRoster(t.dataset.assign, t.dataset.step, t.value); });
     if (t.matches("table.roster select")) savePresence(t.dataset.role, t.dataset.id, [t.dataset.date], t.value); };
-  $("#f-who").onchange = e => F.who = e.target.value;
+  $("#f-who").onchange = e => { F.who = e.target.value; const home = everyone.find(x => x.key === F.who)?.home;
+    if (home && F.location && F.location !== home) F.location = home; guard(viewRoster); };   // a person attached to one location can only be put there
   $("#f-loc").onchange = e => F.location = e.target.value;
   $("#f-from").onchange = e => F.from = e.target.value;
   $("#f-to").onchange = e => F.to = e.target.value;

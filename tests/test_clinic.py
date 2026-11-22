@@ -814,6 +814,34 @@ class BookListTests(unittest.TestCase):
         self.assertEqual(sorted(b.date for b in self.c.bookings.values()), [MON, tue])
         self.assertTrue(any("Bad date" in m for m in r["results"][2]["reasons"]))
 
+    def test_staff_attached_to_a_location_can_only_be_there(self):
+        self.c.staff["s1"].home_location_id = "a"                      # permanently at A; s2 floats
+        tick(self.c, "staff", "s1", "a")
+        tick(self.c, "staff", "s2", "b")                               # floaters can be anywhere
+        with self.assertRaises(ClinicError) as cm:
+            tick(self.c, "staff", "s1", "b")
+        self.assertIn("permanently attached to A", str(cm.exception))
+        self.assertEqual(self.c.presence_at("staff", "s1", MON), "a")  # the refusal changed nothing
+        tick(self.c, "staff", "s1", None)                              # not working that day is always fine
+        rows = {p["id"]: p for p in self.c.timetable("a", MON)["staff"]}
+        self.assertEqual((rows["s1"]["home"], rows["s2"]["home"]), ("a", None))
+        self.assertEqual({p["id"]: p["home"] for p in self.c.roster(MON, 1)["people"]}["s1"], "a")
+
+    def test_a_home_location_survives_save_and_load_and_must_exist(self):
+        self.c.presence.clear()
+        self.c.staff["s1"].home_location_id = "b"
+        again = Clinic.from_groups(self.c.to_groups())
+        self.assertEqual((again.staff["s1"].home_location_id, again.staff["s2"].home_location_id), ("b", None))
+        self.assertNotIn("home_location_id", self.c.to_groups()["resources"]["staff"][1])   # floaters carry no extra key
+        groups = self.c.to_groups()
+        groups["resources"]["staff"][0]["home_location_id"] = "nowhere"
+        with self.assertRaises(ClinicError):
+            Clinic.from_groups(groups)
+        groups = self.c.to_groups()                                    # a schedule that puts them elsewhere is refused on load
+        groups["schedule"]["presence"] = {str(MON): {"doctors": {}, "staff": {"s1": "a"}}}      # s1 is attached to B
+        with self.assertRaises(ClinicError):
+            Clinic.from_groups(groups)
+
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},
                            dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain",

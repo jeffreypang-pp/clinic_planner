@@ -214,6 +214,7 @@ class Doctor:
 class Staff:
     id: str
     name: str
+    home_location_id: str | None = None     # permanently attached to this location (None = can float between locations)
 
 
 @dataclass
@@ -329,9 +330,13 @@ class Clinic:
         any location).  Replaces wherever they were that day: one location per day.
         Existing bookings are never touched; see ``issues()``."""
         day = parse_date(day)
-        self._get(self._people(role), person_id, role)
+        person = self._get(self._people(role), person_id, role)
         if location_id is not None:
             self._get(self.locations, location_id, "location")
+            home = getattr(person, "home_location_id", None)
+            if home and location_id != home:
+                raise ClinicError(f"{person.name} is permanently attached to {self.locations[home].name} "
+                                  f"and can't be put at {self.locations[location_id].name}")
             self.presence[(role, person_id, day)] = location_id
         else:
             self.presence.pop((role, person_id, day), None)
@@ -820,8 +825,9 @@ class Clinic:
                         tag = f"booked:{b.id}:{step}" if b.location_id == location_id else f"away:{b.location_id}"
                         for i in range(a, e):
                             cells[i] = tag
+            home = getattr(p, "home_location_id", None)
             return {"id": p.id, "name": p.name, "cells": cells,
-                    "here": at == location_id, "at": at}
+                    "here": at == location_id, "at": at, "home": home}
 
         def room_row(room):
             cells = with_blocks("room", room.id, list(open_cells))
@@ -854,7 +860,7 @@ class Clinic:
         start = parse_date(start)
         dates = [start + timedelta(days=i) for i in range(days)]
         def row(role, p):
-            return {"role": role, "id": p.id, "name": p.name,
+            return {"role": role, "id": p.id, "name": p.name, "home": getattr(p, "home_location_id", None),
                     "at": [self.presence.get((role, p.id, d)) for d in dates]}
         return {"dates": [d.isoformat() for d in dates],
                 "people": [row("doctor", d) for d in self.doctors.values()]
@@ -985,7 +991,8 @@ class Clinic:
             } for t in self.treatments.values()],
             "doctors": [{"id": d.id, "name": d.name, "treatments": sorted(d.treatments)}
                         for d in self.doctors.values()],
-            "staff": [{"id": s.id, "name": s.name} for s in self.staff.values()],
+            "staff": [{"id": s.id, "name": s.name, **({"home_location_id": s.home_location_id} if s.home_location_id else {})}
+                      for s in self.staff.values()],
             "presence": presence,
             "blocks": self._blocks_json(),
             "bookings": [{"id": b.id, "name": b.name, "treatment_id": b.treatment_id,
@@ -1080,7 +1087,10 @@ class Clinic:
         for s in data.get("staff", []):
             sid = need(s, "id", "staff")
             unique(c.staff, sid, "staff")
-            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"))
+            home = s.get("home_location_id") or None
+            if home is not None and home not in c.locations:
+                raise ClinicError(f"Staff {sid}: unknown home_location_id {home!r}")
+            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"), home)
 
         for day, entry in (data.get("presence") or {}).items():
             extra = set(entry) - {"doctors", "staff"}
