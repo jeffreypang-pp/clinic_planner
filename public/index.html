@@ -447,7 +447,7 @@ async function viewTimetable() {
     const tickTitle = r.here ? `In ${t.location} today. Untick if they are not in any location.`
       : r.at ? `At ${locName(r.at)} today. Tick to move them to ${t.location}.` : `Not in any location today. Tick to put them in ${t.location}.`;
     const tick = role === "room" ? "" : `<input type="checkbox" class="here" data-role="${role}" data-id="${r.id}" ${r.here ? "checked" : ""} title="${esc(tickTitle)}">`;
-    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name + (r.usual ? " — usually at " + locName(r.usual) : "") + (r.here ? " — here today" : r.at ? " — at " + locName(r.at) + " today" : role === "room" ? "" : " — not in any location today"))}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name + (r.usual ? " — usually at " + locName(r.usual) : "") + (role === "staff" && byId(S.clinic.staff, r.id)?.skills?.length ? " — trained: " + byId(S.clinic.staff, r.id).skills.map(x => x.toUpperCase()).join(", ") : "") + (r.here ? " — here today" : r.at ? " — at " + locName(r.at) + " today" : role === "room" ? "" : " — not in any location today"))}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
     for (let i = lo; i < hi; ) {
       const c = r.cells[i];
       if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
@@ -471,8 +471,9 @@ async function viewTimetable() {
     let html = `<div class="tt-row total-row" style="${cols}"><div class="tt-label" title="How many staff the treatments need in each 15-minute block (named or “assign later”). Hover a cell to compare with the staff ticked in and not blocked."><b>Total staff</b> <small>needed</small></div>`;
     for (let i = lo; i < hi; i++) {
       const need = tot.needed[i], have = tot.available[i];
-      const cls = need === 0 ? "none" : need > have ? "over" : need === have ? "full" : "ok";
-      html += `<div class="cell tot ${cls}" title="${slotStr(i)} — ${need} staff needed, ${have} available${need > have ? " (shortage)" : need && need === have ? " (all in use)" : ""}">${need || ""}</div>`;
+      const sk = tot.skill_short?.[i] && need <= have;   // enough people, but not enough of the trained ones
+      const cls = need === 0 ? "none" : need > have || sk ? "over" : need === have ? "full" : "ok";
+      html += `<div class="cell tot ${cls}" title="${slotStr(i)} — ${need} staff needed, ${have} available${need > have ? " (shortage)" : sk ? " (not enough staff trained for the equipment in use)" : need && need === have ? " (all in use)" : ""}">${need || ""}</div>`;
     }
     return html + "</div>";
   }
@@ -550,6 +551,12 @@ const MINUTES = Array.from({ length: 17 }, (_, i) => i * 15);          // 0, 15 
 const minOpts = sel => MINUTES.map(m => `<option value="${m}" ${m === +sel ? "selected" : ""}>${m}</option>`).join("");
 // Every treatment row belongs to a clinic (location): its rooms, the staff ticked in there and its opening hours all follow it.
 const roomsAt = loc => byId(locs(), loc)?.rooms || [];
+// Equipment in the chosen room that only trained staff may work with, for a step (numbing is exempt: the machine isn't used then).
+const trainingNeeded = (it, k) => { const need = S.clinic.equipment_needing_training || [];
+  return k === "numbing" ? [] : (roomsAt(it.loc).find(r => r.id === it.room)?.equipment || []).filter(e => need.includes(e)); };
+const isTrained = (p, tags) => tags.every(e => (p.skills || []).includes(e));
+const staffForStep = (it, k) => staffAt(it.loc, it.date).filter(p => isTrained(p, trainingNeeded(it, k)));
+const toolName = tag => tag.toUpperCase();
 // Where someone is on a day: a roster exception if there is one (null = off), else their usual location if it is open that day.
 const whereIs = (role, p, iso) => {
   const ov = S.clinic.presence?.[iso]?.[role === "doctor" ? "doctors" : "staff"] || {};
@@ -591,6 +598,8 @@ function fixItem(it) {   // keep a row consistent with its clinic and with the o
   const here = new Set(staffAt(it.loc, it.date).map(x => x.id)), on = new Set(activeSteps(it));
   for (const k of Object.keys(it.staffIds)) {   // a named staff member must be ticked in at the row's clinic, and the step must exist
     if (!on.has(k)) delete it.staffIds[k];
+    else if (it.staffIds[k] && here.has(it.staffIds[k]) && !staffForStep(it, k).some(p => p.id === it.staffIds[k])) {
+      delete it.staffIds[k]; it.note = `The named staff member isn't trained in ${trainingNeeded(it, k).map(toolName).join(", ")}, so that step is back to “assign later”.`; }
     else if (it.staffIds[k] && !here.has(it.staffIds[k])) { delete it.staffIds[k]; it.note = `A named staff member isn't ticked in at ${clinicName(it.loc)} on ${it.date}, so that step is back to “assign later”.`; }
   }
 }
@@ -643,7 +652,10 @@ function drawBookingPanel() {
       <div class="bk-edit"><label class="grow">Room<select data-f="room">${rooms.length ? rooms.map(r => `<option value="${r.id}" ${r.id === it.room ? "selected" : ""}>${esc(r.name)}</option>`).join("") : `<option value="">(no rooms at ${esc(clinicName(it.loc))})</option>`}</select></label>
         ${+it.doctor > 0 ? `<label class="grow">Doctor<select data-f="doctorId"><option value="">any available</option>${S.clinic.doctors.map(d => `<option value="${d.id}" ${d.id === it.doctorId ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>` : ""}</div>
       ${activeSteps(it).length ? `<div class="bk-mins" style="grid-template-columns: repeat(${activeSteps(it).length}, 1fr)">${activeSteps(it).map(k => `
-        <label title="Who does this step. “assign later” leaves it open: it still counts as one staff member needed (see Total staff).">${{numbing: "Numbing", doctor: "Doctor-step", staff: "Staff-step"}[k]} staff<select data-f="staff:${k}"><option value="">assign later</option>${hereStaff.map(r => `<option value="${r.id}" ${r.id === it.staffIds[k] ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>`).join("")}</div>` : ""}
+        <label title="Who does this step. “assign later” leaves it open: it still counts as one staff member needed (see Total staff).">${{numbing: "Numbing", doctor: "Doctor-step", staff: "Staff-step"}[k]} staff<select data-f="staff:${k}"><option value="">assign later</option>${staffForStep(it, k).map(r => `<option value="${r.id}" ${r.id === it.staffIds[k] ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>`).join("")}</div>` : ""}
+      ${(() => { const tags = [...new Set(activeSteps(it).flatMap(k => trainingNeeded(it, k)))]; if (!tags.length) return "";
+        const who = hereStaff.filter(p => isTrained(p, tags)).map(p => p.name);
+        return `<div class="muted" style="font-size:12px">${esc(tags.map(toolName).join(", "))} needs trained staff for the doctor and staff steps. Trained and ticked in here: ${who.length ? esc(who.join(", ")) : "<b style='color:var(--bad)'>nobody</b>"}.</div>`; })()}
       <div class="bk-edit"><input data-f="client" placeholder="client (optional)" value="${esc(it.client)}"><button class="link" data-rm="${i}">remove</button></div>
       ${sr.reason || sr.outside ? `<div style="color:var(--bad);font-size:12px">${esc(sr.reason || "This start time is outside the opening hours (or the treatment would end after closing).")}</div>` : ""}
       <div class="muted">${total ? `Total ${total} min, ${it.start}–${endOf(it)}` : "Set at least one time above 0"}${+it.doctor === 0 ? " · staff alone, no doctor" : ""}${it.preset ? " · template skills/equipment apply" : ""}</div>
@@ -902,7 +914,7 @@ async function viewRoster() {
   const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   const cell = (p, i) => `<td><select data-role="${p.role}" data-id="${p.id}" data-date="${roster.dates[i]}" class="${p.at[i] ? "set" : ""}${p.at[i] !== p.default[i] ? " exc" : ""}" ${p.usual[i] ? `title="Usually ${esc(clinicName(p.usual[i]))}${p.at[i] !== p.default[i] ? " (exception today)" : ""}"` : ""}>
       <option value="">—</option>${locs().map(l => `<option value="${l.id}" ${p.at[i] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></td>`;
-  const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}${usualText(p) ? ` <span class="muted">· ${esc(usualText(p))}</span>` : ""}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
+  const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}${usualText(p) ? ` <span class="muted">· ${esc(usualText(p))}</span>` : ""}${byId(S.clinic.staff, p.id)?.skills?.length && p.role === "staff" ? ` <span class="muted">· trained: ${esc(byId(S.clinic.staff, p.id).skills.map(x => x.toUpperCase()).join(", "))}</span>` : ""}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
   $("#main").innerHTML = `
     <div class="card"><h3>Roster · week of ${esc(roster.dates[0])}</h3>
       <div class="row"><button class="btn secondary" data-week="-7">← Previous week</button>

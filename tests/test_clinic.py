@@ -875,6 +875,88 @@ class BookListTests(unittest.TestCase):
             with self.assertRaises(ClinicError, msg=str(bad)):
                 Clinic.from_groups(groups)
 
+    # ---- staff training: some equipment may only be used with trained staff ---------------
+    def trained_laser(self):
+        self.c.training_equipment = {"laser"}
+        self.c.staff["s1"].skills = {"laser"}                              # s2 is not trained
+        tick(self.c, "doctor", "d2", "a")
+
+    def test_untrained_staff_cannot_work_with_equipment_that_needs_training(self):
+        self.trained_laser()
+        cust = dict(numbing_minutes=15, doctor_minutes=30, staff_minutes=15, room_id="a_laser", start="10:00")
+        # named: the untrained one is refused, the trained one is fine
+        bad = self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser", staff={"doctor": "s2"})
+        self.assertFalse(bad["available"])
+        self.assertTrue(any("S2 is not trained in LASER" in r for r in bad["reasons"]))
+        self.assertTrue(self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser", staff={"doctor": "s1"})["available"])
+        # numbing doesn't use the machine: anyone may do it
+        self.assertTrue(self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser", staff={"numbing": "s2"})["available"])
+        # a room without such equipment needs no training
+        self.assertTrue(self.c.check_custom("a", MON, t("10:00"), 15, 30, 15, "a_plain", staff={"doctor": "s2"})["available"])
+        # "assign later" steps are matched to trained people: one trained person can't do two steps at once...
+        self.assertEqual(self.run_list([cust])["results"][0]["status"], "booked")
+        second = self.run_list([dict(cust, room_id="a_laser2", start="10:15")])["results"][0]     # doctor step overlaps the first one's doctor step
+        self.assertEqual(second["status"], "failed")
+        self.assertTrue(any("No staff trained in LASER" in r for r in second["reasons"]))
+        # ...although there are enough staff in number (2 ticked in, 2 steps) -- it is the training that is short
+        self.assertEqual(self.c.staff_capacity("a", MON)[t("10:15")], 2)
+        # non-overlapping skilled steps are fine for the one trained person
+        self.assertEqual(self.run_list([dict(cust, room_id="a_laser2", start="11:00")])["results"][0]["status"], "booked")
+
+    def test_a_template_without_a_fixed_room_needs_a_room_with_trained_staff_free(self):
+        self.trained_laser()
+        tick(self.c, "staff", "s1", None)                                   # nobody trained is in today
+        av = self.c.check_availability("laser", "a", MON, t("10:00"))
+        self.assertFalse(av["available"])
+        self.assertTrue(any("No staff trained in LASER" in r for r in av["reasons"]))
+        tick(self.c, "staff", "s1", "a")
+        self.assertTrue(self.c.check_availability("laser", "a", MON, t("10:00"))["available"])
+
+    def test_staff_choices_and_problems_respect_training(self):
+        self.trained_laser()
+        b = self.c.book_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser")
+        steps = {x["name"]: x for x in self.c.describe_booking(b)["steps"]}
+        self.assertEqual({p["id"] for p in steps["numbing"]["staff_options"]}, {"s1", "s2"})
+        self.assertEqual({p["id"] for p in steps["doctor"]["staff_options"]}, {"s1"})
+        self.assertEqual({p["id"] for p in steps["staff"]["staff_options"]}, {"s1"})
+        with self.assertRaises(ClinicError) as cm:
+            self.c.set_booking_staff(b.id, {"doctor": "s2"})
+        self.assertIn("not trained", str(cm.exception))
+        self.c.set_booking_staff(b.id, {"numbing": "s2", "doctor": "s1"})
+        self.assertEqual(self.c.issues(), [])
+        # the trained person goes off sick: the booking now has a problem, said in words
+        tick(self.c, "staff", "s1", None)
+        self.assertTrue(any("trained" in i or "S1 is not in" in i for i in self.c.issues()))
+
+    def test_a_booking_left_without_trained_staff_is_reported(self):
+        self.trained_laser()
+        self.c.book_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser")        # nothing named: any trained person will do
+        self.assertEqual(self.c.issues(), [])
+        total = self.c.timetable("a", MON)["staff_total"]
+        self.assertFalse(any(total["skill_short"]))
+        tick(self.c, "staff", "s1", None)                                       # s2 (untrained) is the only one left
+        out = self.c.issues()
+        self.assertTrue(any("Not enough staff trained in LASER" in i for i in out), out)
+        self.assertTrue(any(self.c.timetable("a", MON)["staff_total"]["skill_short"]))
+
+    def test_training_survives_save_and_load_and_is_validated(self):
+        self.trained_laser()
+        res = self.c.to_groups()["resources"]
+        self.assertEqual(res["equipment_needing_training"], ["laser"])
+        self.assertEqual(res["staff"][0]["skills"], ["laser"])
+        self.assertNotIn("skills", res["staff"][1])
+        again = Clinic.from_groups(self.c.to_groups())
+        self.assertEqual((again.training_equipment, again.staff["s1"].skills, again.staff["s2"].skills), ({"laser"}, {"laser"}, set()))
+        for field, value in (("equipment_needing_training", "laser"), ("equipment_needing_training", [""])):
+            groups = self.c.to_groups()
+            groups["resources"][field] = value
+            with self.assertRaises(ClinicError, msg=str((field, value))):
+                Clinic.from_groups(groups)
+        groups = self.c.to_groups()
+        groups["resources"]["staff"][0]["skills"] = "laser"
+        with self.assertRaises(ClinicError):
+            Clinic.from_groups(groups)
+
     def test_templates_and_custom_items_can_be_mixed(self):
         r = self.run_list([{"treatment_id": "botox", "start": "09:00"},
                            dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain",

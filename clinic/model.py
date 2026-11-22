@@ -218,6 +218,17 @@ class Staff:
     name: str
     usual_location_id: str | None = None                                       # where they usually are
     usual_locations: dict[int, str] = field(default_factory=dict)              # ...or per weekday (0 = Monday)
+    skills: set[str] = field(default_factory=set)                              # equipment they are trained on
+
+
+# The steps in which the room's equipment is used.  Numbing is a preparation step, so it needs no
+# training on the machine; the doctor treatment's assistant and the staff treatment do.
+SKILLED_STEPS = ("doctor", "staff")
+
+
+def _pretty(tags, clinic=None) -> list[str]:
+    """Equipment tags as shown to people (``body_machine`` -> ``BODY_MACHINE``, like the room names)."""
+    return [t.upper() for t in tags]
 
 
 def usual_location(person, day: Date) -> str | None:
@@ -296,6 +307,8 @@ class Clinic:
         self.doctors: dict[str, Doctor] = {}
         self.staff: dict[str, Staff] = {}
         self.bookings: dict[str, Booking] = {}
+        # equipment tags (``Room.equipment``) that only trained staff (``Staff.skills``) may work with
+        self.training_equipment: set[str] = set()
         # (role, person_id, date) -> location_id.  A dict key per person per day,
         # so "at most one location per day" holds by construction.
         self.presence: dict[tuple[str, str, Date], str | None] = {}   # exceptions to the usual locations (None = off)
@@ -452,6 +465,95 @@ class Clinic:
                 cap[i] -= 1
         return cap
 
+    # ---- staff training: who may work with which equipment ------------------------
+    def _skills_needed(self, room_id: str | None, step_name: str) -> frozenset:
+        """Equipment tags the staff member of this step must be trained on (empty = anyone)."""
+        room = self.rooms.get(room_id) if room_id else None
+        if room is None or step_name not in SKILLED_STEPS:
+            return frozenset()
+        return frozenset(room.equipment & self.training_equipment)
+
+    def _untrained(self, sid: str, skills: frozenset) -> list[str]:
+        return sorted(skills - self.staff[sid].skills)
+
+    def _staff_pool(self, loc_id: str, day: Date) -> list[set[str]]:
+        """Per slot: the ids of the staff ticked in at the location and not blocked in that slot."""
+        present = [sid for sid in self.staff if self.presence_at("staff", sid, day) == loc_id]
+        pool = [set(present) for _ in range(SLOTS_PER_DAY)]
+        for sid in present:
+            for i in self.blocks.get(("staff", sid, day), ()):
+                pool[i].discard(sid)
+        return pool
+
+    def _slot_demands(self, loc_id: str, day: Date, ignore: str | None = None, extra=()) -> list[list]:
+        """Per slot: ``(named staff id | None, equipment tags needed)`` for every active step at the
+        location, plus ``extra`` = ``(start, end, staff id | None, tags)``."""
+        out: list[list] = [[] for _ in range(SLOTS_PER_DAY)]
+        for b in self._bookings_on(day):
+            if b.location_id == loc_id and b.id != ignore:
+                for st in b.steps():
+                    item = (b.staff.get(st.name), self._skills_needed(b.room_id, st.name))
+                    for i in range(st.start, st.end):
+                        out[i].append(item)
+        for start, end, sid, skills in extra:
+            for i in range(start, end):
+                out[i].append((sid, skills))
+        return out
+
+    def _skills_unmatched(self, demands: list, pool: set[str]) -> bool:
+        """True if, in one slot, the steps that need trained staff can't all be given a different
+        trained person (named people are spoken for; the rest are matched to whoever is free)."""
+        if not any(skills for _sid, skills in demands):
+            return False
+        named = {sid for sid, _ in demands if sid}
+        free = [self.staff[sid] for sid in pool if sid not in named]
+        needs = [skills for sid, skills in demands if not sid]
+        taken: dict[str, int] = {}
+
+        def place(d: int, seen: set) -> bool:
+            for p in free:
+                if p.id not in seen and needs[d] <= p.skills:
+                    seen.add(p.id)
+                    if p.id not in taken or place(taken[p.id], seen):
+                        taken[p.id] = d
+                        return True
+            return False
+
+        order = sorted(range(len(needs)), key=lambda d: -len(needs[d]))   # the pickiest steps first
+        return not all(place(d, set()) for d in order)
+
+    def skill_short(self, loc_id: str, day: Date) -> list[bool]:
+        """Per slot: the treatments need trained staff that aren't there (count-wise or skill-wise)."""
+        out = [False] * SLOTS_PER_DAY
+        if not self.training_equipment:
+            return out
+        demands, pool = self._slot_demands(loc_id, day), self._staff_pool(loc_id, day)
+        for i in range(SLOTS_PER_DAY):
+            out[i] = self._skills_unmatched(demands[i], pool[i])
+        return out
+
+    def _skill_problem(self, plan: "Plan", room_id: str, ignore: str | None) -> str | None:
+        """Why the staff steps of ``plan`` can't be done in this room for lack of trained staff."""
+        room, loc = self.rooms[room_id], self.locations[plan.location_id]
+        extra = []
+        for st in plan.steps():
+            skills, sid = self._skills_needed(room_id, st.name), plan.staff_ids.get(st.name)
+            if sid and skills and self._untrained(sid, skills):
+                return (f"{self.staff[sid].name} is not trained in {', '.join(_pretty(self._untrained(sid, skills), self))} "
+                        f"(needed for the {st.label.lower()} in {room.name})")
+            extra.append((st.start, st.end, sid, skills))
+        if not any(skills for *_rest, skills in extra):
+            return None
+        demands, pool = self._slot_demands(plan.location_id, plan.day, ignore, extra), self._staff_pool(plan.location_id, plan.day)
+        for start, end, _sid, skills in extra:
+            for i in range(start, end):
+                if skills and self._skills_unmatched(demands[i], pool[i]):
+                    trained = sum(1 for sid in pool[i] if skills <= self.staff[sid].skills)
+                    return (f"No staff trained in {', '.join(_pretty(sorted(skills), self))} is free for the "
+                            f"{next(st.label for st in plan.steps() if st.start <= i < st.end).lower()} in {room.name} at "
+                            f"{format_slot(i)} ({trained} trained staff ticked in at {loc.name}, the rest are busy or blocked)")
+        return None
+
     def staff_demand(self, loc_id: str, day: Date, ignore: str | None = None) -> list[int]:
         """Per slot: staff needed by the treatments at the location (every active step needs one,
         named or not)."""
@@ -473,16 +575,24 @@ class Clinic:
                 return "booked"
         return None
 
-    def _staff_options(self, loc_id: str, day: Date, start: int, end: int, ignore: str | None) -> list:
-        """Staff who could be named for ``[start, end)``: ticked in here, not blocked, not named elsewhere."""
+    def _staff_options(self, loc_id: str, day: Date, start: int, end: int, ignore: str | None,
+                       room_id: str | None = None, step_name: str = "") -> list:
+        """Staff who could be named for ``[start, end)``: ticked in here, trained for the room's equipment
+        (in the steps that use it), not blocked, not named elsewhere."""
+        skills = self._skills_needed(room_id, step_name)
         return [p for p in self.staff.values()
-                if self.presence_at("staff", p.id, day) == loc_id
+                if self.presence_at("staff", p.id, day) == loc_id and skills <= p.skills
                 and self._staff_conflict(p.id, day, start, end, ignore) is None]
 
-    def _named_staff_problem(self, sid: str, loc_id: str, day: Date, st: Step, ignore: str | None) -> str | None:
+    def _named_staff_problem(self, sid: str, loc_id: str, day: Date, st: Step, ignore: str | None,
+                             room_id: str | None = None) -> str | None:
         person = self.staff[sid]
         if self.presence_at("staff", sid, day) != loc_id:
             return f"{person.name} is not in {self.locations[loc_id].name} on {day}"
+        skills = self._skills_needed(room_id, st.name)
+        if skills and self._untrained(sid, skills):
+            return (f"{person.name} is not trained in {', '.join(_pretty(self._untrained(sid, skills), self))} "
+                    f"(needed for the {st.label.lower()} in {self.rooms[room_id].name})")
         window = f"{format_slot(st.start)}-{format_slot(st.end)}"
         why = self._staff_conflict(sid, day, st.start, st.end, ignore)
         if why == "blocked":
@@ -592,7 +702,8 @@ class Clinic:
                                   "staff_id": sid or None,
                                   "capacity_left": min(cap[i] - dem[i] for i in range(st.start, st.end)),
                                   "staff": [{"id": p.id, "name": p.name} for p in
-                                            self._staff_options(location_id, day, st.start, st.end, ignore)]})
+                                            self._staff_options(location_id, day, st.start, st.end, ignore,
+                                                                plan.room_id, st.name)]})
                 if st.name == "doctor":
                     pool = [d for d in self.doctors.values() if t is None or t.id in d.treatments]
                     docs, present_docs = self._free_people("doctor", pool, location_id, day,
@@ -617,7 +728,11 @@ class Clinic:
                 elif self._room_busy(room.id, day, start, end, ignore) or self._is_blocked("room", room.id, day, start, end):
                     reasons.append(f"Room {room.name} is booked or unavailable for {span}")
                 else:
-                    rooms = [room]
+                    problem = self._skill_problem(plan, room.id, ignore)
+                    if problem:
+                        reasons.append(problem)
+                    else:
+                        rooms = [room]
             else:
                 fitting = [r for r in self.rooms.values()
                            if r.location_id == location_id and equipment <= r.equipment]
@@ -629,6 +744,11 @@ class Clinic:
                     reasons.append(f"{loc.name} has no treatment room with the required equipment ({need})")
                 elif not rooms:
                     reasons.append(f"Every suitable room at {loc.name} is booked or unavailable for {span}")
+                else:       # rooms whose equipment needs trained staff: only if such staff are free for the steps
+                    problems = {r.id: self._skill_problem(plan, r.id, ignore) for r in rooms}
+                    if all(problems.values()):
+                        reasons.append(next(iter(problems.values())))
+                    rooms = [r for r in rooms if not problems[r.id]]
 
         return {
             "available": not reasons,
@@ -732,7 +852,7 @@ class Clinic:
             if step in steps and not staff[step]:
                 new.pop(step, None)
         for step, sid in named.items():
-            problem = self._named_staff_problem(sid, b.location_id, b.date, steps[step], b.id)
+            problem = self._named_staff_problem(sid, b.location_id, b.date, steps[step], b.id, b.room_id)
             if problem:
                 raise ClinicError(problem)
             new[step] = sid
@@ -898,7 +1018,8 @@ class Clinic:
             "staff": [person_row("staff", s) for s in self.staff.values()],
             # the "Total staff" row: staff needed by the treatments here vs staff available, per slot
             "staff_total": {"needed": self.staff_demand(location_id, day),
-                            "available": self.staff_capacity(location_id, day)},
+                            "available": self.staff_capacity(location_id, day),
+                            "skill_short": self.skill_short(location_id, day)},
             "rooms": [room_row(r) for r in self.rooms.values() if r.location_id == location_id],
             "bookings": [self.describe_booking(b) for b in sorted(here, key=lambda b: b.start)],
         }
@@ -927,7 +1048,7 @@ class Clinic:
         steps = []
         for st in b.steps():
             sid = b.staff.get(st.name)
-            options = self._staff_options(b.location_id, b.date, st.start, st.end, b.id)
+            options = self._staff_options(b.location_id, b.date, st.start, st.end, b.id, b.room_id, st.name)
             if sid and sid not in {p.id for p in options}:
                 options.append(self.staff[sid])          # keep the current choice selectable even if it is now a problem
             steps.append({"name": st.name, "label": st.label,
@@ -963,7 +1084,7 @@ class Clinic:
             window = f"{format_slot(st.start)}-{format_slot(st.end)}"
             sid = b.staff.get(st.name)
             if sid:     # "assign later" steps have nobody to check; they count in the shortage check instead
-                problem = self._named_staff_problem(sid, b.location_id, day, st, b.id)
+                problem = self._named_staff_problem(sid, b.location_id, day, st, b.id, b.room_id)
                 if problem:
                     probs.append(f"staff {problem}")
             if st.name == "doctor":
@@ -1006,6 +1127,20 @@ class Clinic:
                            f"{format_slot(i)}-{format_slot(j)}: up to {need[worst]} staff needed but only "
                            f"{have[worst]} available")
                 i = j
+            if self.training_equipment:     # enough staff in number, but not the trained ones
+                short, demands = self.skill_short(loc_id, day), self._slot_demands(loc_id, day)
+                i = 0
+                while i < SLOTS_PER_DAY:
+                    if not short[i] or need[i] > have[i]:
+                        i += 1
+                        continue
+                    j = i
+                    while j < SLOTS_PER_DAY and short[j] and need[j] <= have[j]:
+                        j += 1
+                    tags = sorted({t for k in range(i, j) for sid, sk in demands[k] if not sid for t in sk})
+                    out.append(f"Not enough staff trained in {', '.join(_pretty(tags))} at "
+                               f"{self.locations[loc_id].name} on {day} {format_slot(i)}-{format_slot(j)}")
+                    i = j
         for b in sorted(self.bookings.values(), key=lambda b: (b.date, b.start)):
             problems = self._booking_problems(b)
             if problems:
@@ -1041,7 +1176,9 @@ class Clinic:
             } for t in self.treatments.values()],
             "doctors": [{"id": d.id, "name": d.name, "treatments": sorted(d.treatments), **_usual_json(d)}
                         for d in self.doctors.values()],
-            "staff": [{"id": s.id, "name": s.name, **_usual_json(s)} for s in self.staff.values()],
+            "equipment_needing_training": sorted(self.training_equipment),
+            "staff": [{"id": s.id, "name": s.name, **_usual_json(s), **({"skills": sorted(s.skills)} if s.skills else {})}
+                      for s in self.staff.values()],
             "presence": presence,
             "blocks": self._blocks_json(),
             "bookings": [{"id": b.id, "name": b.name, "treatment_id": b.treatment_id,
@@ -1133,10 +1270,18 @@ class Clinic:
                     raise ClinicError(f"Doctor {did}: unknown treatment {tid!r}")
             c.doctors[did] = Doctor(did, need(d, "name", f"doctor {did}"), skills, *c._parse_usual(d, f"Doctor {did}"))
 
+        training = data.get("equipment_needing_training") or []
+        if not isinstance(training, list) or not all(isinstance(x, str) and x for x in training):
+            raise ClinicError("equipment_needing_training must be a list of equipment names, e.g. [\"body_machine\"]")
+        c.training_equipment = set(training)
+
         for s in data.get("staff", []):
             sid = need(s, "id", "staff")
             unique(c.staff, sid, "staff")
-            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"), *c._parse_usual(s, f"Staff {sid}"))
+            skills = s.get("skills") or []
+            if not isinstance(skills, list) or not all(isinstance(x, str) and x for x in skills):
+                raise ClinicError(f"Staff {sid}: skills must be a list of equipment names, e.g. [\"body_machine\"]")
+            c.staff[sid] = Staff(sid, need(s, "name", f"staff {sid}"), *c._parse_usual(s, f"Staff {sid}"), set(skills))
 
         for day, entry in (data.get("presence") or {}).items():
             extra = set(entry) - {"doctors", "staff"}
@@ -1197,6 +1342,7 @@ class Clinic:
                 "version": FORMAT_VERSION,
                 "locations": [{"id": l["id"], "name": l["name"], "rooms": l["rooms"]} for l in d["locations"]],
                 "doctors": [{k: v for k, v in x.items() if k != "treatments"} for x in d["doctors"]],
+                **({"equipment_needing_training": d["equipment_needing_training"]} if d["equipment_needing_training"] else {}),
                 "staff": d["staff"],
             },
             "planning": {
@@ -1247,6 +1393,7 @@ class Clinic:
             "treatments": plan.get("treatments", []),
             "doctors": [dict(d, treatments=skills.get(d.get("id")) or []) for d in res.get("doctors", [])],
             "staff": res.get("staff", []),
+            "equipment_needing_training": res.get("equipment_needing_training", []),
             "presence": presence or old_presence,
             "blocks": sched.get("blocks", []),
             "bookings": sched.get("bookings", []),
