@@ -298,7 +298,7 @@ class Clinic:
         self.bookings: dict[str, Booking] = {}
         # (role, person_id, date) -> location_id.  A dict key per person per day,
         # so "at most one location per day" holds by construction.
-        self.presence: dict[tuple[str, str, Date], str] = {}
+        self.presence: dict[tuple[str, str, Date], str | None] = {}   # exceptions to the usual locations (None = off)
         # (kind, id, date) -> slots blocked; kind is doctor | staff | room
         self.blocks: dict[tuple[str, str, Date], set[int]] = {}
 
@@ -346,14 +346,26 @@ class Clinic:
     def set_presence(self, role: str, person_id: str, day, location_id: str | None) -> None:
         """Put a doctor/staff member at ``location_id`` for the whole day (``None`` = not in
         any location).  Replaces wherever they were that day: one location per day.
-        Existing bookings are never touched; see ``issues()``."""
+        Existing bookings are never touched; see ``issues()``.
+
+        Without a roster entry a person is at their *usual* location on the days it is open
+        (``default_presence``).  ``self.presence`` therefore only holds the exceptions: a different
+        location, or ``None`` = off that day.  Setting someone to where they already would be by
+        default just removes their exception."""
         day = parse_date(day)
-        self._get(self._people(role), person_id, role)
+        person = self._get(self._people(role), person_id, role)
         if location_id is not None:
             self._get(self.locations, location_id, "location")
-            self.presence[(role, person_id, day)] = location_id
-        else:
+        if location_id == self.default_presence(person, day):
             self.presence.pop((role, person_id, day), None)
+        else:
+            self.presence[(role, person_id, day)] = location_id
+
+    def default_presence(self, person, day: Date) -> str | None:
+        """Where ``person`` is on ``day`` when nothing says otherwise: their usual location,
+        if that location is open that day."""
+        loc = usual_location(person, day)
+        return loc if loc and self.locations[loc].hours_on(day) is not None else None
 
     def _parse_usual(self, entry: dict, what: str) -> tuple[str | None, dict[int, str]]:
         """``usual_location_id`` and/or ``usual_locations`` ({"mon": location_id, ...}) of a person's entry."""
@@ -372,47 +384,13 @@ class Clinic:
             out[WEEKDAYS.index(key)] = loc
         return general, out
 
-    def apply_usual(self, start, end=None, location_id: str | None = None, overwrite: bool = False,
-                    dry_run: bool = False) -> dict:
-        """Tick people in at their usual location for every day from ``start`` to ``end`` (inclusive).
-
-        * a day is skipped for a person when their usual location is closed that day;
-        * days where the person is already ticked in somewhere (an exception, or already right)
-          are kept unless ``overwrite``;
-        * ``location_id`` limits it to people whose usual location that day is that one.
-        Returns ``{"set": n, "kept": n, "closed": n}``: people-days ticked in, left alone, and
-        skipped because their usual location is closed."""
-        first = parse_date(start)
-        last = parse_date(end) if end else first
-        if last < first:
-            raise ClinicError("The last date is before the first date")
-        if (last - first).days >= 366:
-            raise ClinicError("At most 366 days at once")
-        if location_id is not None:
-            self._get(self.locations, location_id, "location")
-        counts = {"set": 0, "kept": 0, "closed": 0}
-        day = first
-        while day <= last:
-            for role, people in (("doctor", self.doctors), ("staff", self.staff)):
-                for p in people.values():
-                    loc = usual_location(p, day)
-                    if not loc or (location_id and loc != location_id):
-                        continue
-                    if self.locations[loc].hours_on(day) is None:
-                        counts["closed"] += 1
-                        continue
-                    here = self.presence.get((role, p.id, day))
-                    if here == loc or (here and not overwrite):
-                        counts["kept"] += 1
-                        continue
-                    counts["set"] += 1
-                    if not dry_run:
-                        self.set_presence(role, p.id, day, loc)
-            day += timedelta(days=1)
-        return counts
-
     def presence_at(self, role: str, person_id: str, day) -> str | None:
-        return self.presence.get((role, person_id, parse_date(day)))
+        """Where a doctor/staff member is on ``day``: an exception if there is one, else their usual location (if open)."""
+        day = parse_date(day)
+        key = (role, person_id, day)
+        if key in self.presence:
+            return self.presence[key]
+        return self.default_presence(self._get(self._people(role), person_id, role), day)
 
     # ---- blocked times (doctor / staff / room) -------------------------------
     def set_blocked(self, kind: str, resource_id: str, day, start: int, end: int, blocked: bool) -> None:
@@ -445,7 +423,7 @@ class Clinic:
     def _person_status(self, role: str, pid: str, loc_id: str, day: Date, start: int, end: int,
                        ignore: str | None = None) -> str:
         """'free' | 'not_here' (not ticked in at this location that day) | 'busy' (blocked/booked)."""
-        if self.presence.get((role, pid, day)) != loc_id:
+        if self.presence_at(role, pid, day) != loc_id:
             return "not_here"
         if self._is_blocked(role, pid, day, start, end):
             return "busy"
@@ -467,7 +445,7 @@ class Clinic:
     # ---- staff: counted as a pool, named only when asked -------------------------
     def staff_capacity(self, loc_id: str, day: Date) -> list[int]:
         """Per slot: staff ticked in at the location that day and not blocked in that slot."""
-        present = [sid for sid in self.staff if self.presence.get(("staff", sid, day)) == loc_id]
+        present = [sid for sid in self.staff if self.presence_at("staff", sid, day) == loc_id]
         cap = [len(present)] * SLOTS_PER_DAY
         for sid in present:
             for i in self.blocks.get(("staff", sid, day), ()):
@@ -498,12 +476,12 @@ class Clinic:
     def _staff_options(self, loc_id: str, day: Date, start: int, end: int, ignore: str | None) -> list:
         """Staff who could be named for ``[start, end)``: ticked in here, not blocked, not named elsewhere."""
         return [p for p in self.staff.values()
-                if self.presence.get(("staff", p.id, day)) == loc_id
+                if self.presence_at("staff", p.id, day) == loc_id
                 and self._staff_conflict(p.id, day, start, end, ignore) is None]
 
     def _named_staff_problem(self, sid: str, loc_id: str, day: Date, st: Step, ignore: str | None) -> str | None:
         person = self.staff[sid]
-        if self.presence.get(("staff", sid, day)) != loc_id:
+        if self.presence_at("staff", sid, day) != loc_id:
             return f"{person.name} is not in {self.locations[loc_id].name} on {day}"
         window = f"{format_slot(st.start)}-{format_slot(st.end)}"
         why = self._staff_conflict(sid, day, st.start, st.end, ignore)
@@ -842,7 +820,7 @@ class Clinic:
         bookings = [b for b in self._bookings_on(day) if b.location_id == location_id]
         keys = [k for k in self.blocks if k[2] == day and (
                     (k[0] == "room" and self.rooms[k[1]].location_id == location_id)
-                    or (k[0] != "room" and self.presence.get((k[0], k[1], day)) == location_id))]
+                    or (k[0] != "room" and self.presence_at(k[0], k[1], day) == location_id))]
         spans = lambda slots: sum(1 for i in slots if i - 1 not in slots)
         result = {
             "bookings": len(bookings),
@@ -882,7 +860,7 @@ class Clinic:
             return cells
 
         def person_row(role, p):
-            at = self.presence.get((role, p.id, day))
+            at = self.presence_at(role, p.id, day)
             if at is None:
                 cells = ["off"] * SLOTS_PER_DAY
             elif at != location_id:
@@ -896,7 +874,8 @@ class Clinic:
                         for i in range(a, e):
                             cells[i] = tag
             return {"id": p.id, "name": p.name, "cells": cells,
-                    "here": at == location_id, "at": at, "usual": usual_location(p, day)}
+                    "here": at == location_id, "at": at, "usual": usual_location(p, day),
+                    "default": self.default_presence(p, day)}
 
         def room_row(room):
             cells = with_blocks("room", room.id, list(open_cells))
@@ -931,7 +910,8 @@ class Clinic:
         def row(role, p):
             return {"role": role, "id": p.id, "name": p.name, **_usual_json(p),
                     "usual": [usual_location(p, d) for d in dates],
-                    "at": [self.presence.get((role, p.id, d)) for d in dates]}
+                    "default": [self.default_presence(p, d) for d in dates],
+                    "at": [self.presence_at(role, p.id, d) for d in dates]}
         return {"dates": [d.isoformat() for d in dates],
                 "people": [row("doctor", d) for d in self.doctors.values()]
                           + [row("staff", s) for s in self.staff.values()]}

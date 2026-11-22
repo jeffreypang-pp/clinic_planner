@@ -373,13 +373,6 @@ class App:
             self.clinic.set_presence(role, pid, d, loc)
         return {"days": len(dates), "issues": self.clinic.issues()}
 
-    def post_apply_usual(self, q, body):
-        """Tick people in at their usual location for a date range (``start``, optional ``end``), optionally
-        only for those usually at ``location_id``.  Days already set are kept unless ``overwrite``."""
-        r = self.clinic.apply_usual(_need(body, "start"), body.get("end"), body.get("location_id") or None,
-                                    bool(body.get("overwrite")), bool(body.get("dry_run")))
-        return {**r, "issues": self.clinic.issues()}
-
     def get_roster(self, q, body):
         return self.clinic.roster(_arg(q, "start"), int(q.get("days", ["7"])[0]))
 
@@ -451,7 +444,6 @@ ROUTES = [
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/bookings/([\w-]+)/staff", "put_booking_staff"),
     ("PUT", r"/api/presence", "put_presence"),
-    ("POST", r"/api/apply-usual", "post_apply_usual"),
     ("GET", r"/api/roster", "get_roster"),
     ("PUT", r"/api/availability", "put_availability"),
     ("PUT", r"/api/locations/([\w-]+)/hours", "put_hours"),

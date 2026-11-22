@@ -821,28 +821,43 @@ class BookListTests(unittest.TestCase):
         rows = {p["id"]: p for p in self.c.timetable("a", MON)["staff"]}
         self.assertEqual((rows["s1"]["usual"], rows["s2"]["usual"]), ("a", None))
 
-    def test_apply_usual_ticks_people_in_but_keeps_exceptions_and_closed_days(self):
+    def test_people_are_at_their_usual_location_on_open_days_without_any_ticking(self):
         wed = date(2026, 11, 25)
         self.c.presence.clear()
         self.c.staff["s1"].usual_location_id = "a"
         self.c.doctors["d1"].usual_locations = {0: "a", 2: "b"}        # Mondays at A, Wednesdays at B
         self.c.locations["b"].opening_hours = {0: (36, 76), 2: (36, 76)}
-        tick(self.c, "staff", "s1", "b", day=MON)                      # an exception on Monday
-        r = self.c.apply_usual(MON, wed)
-        self.assertEqual(self.c.presence_at("staff", "s1", MON), "b")  # kept
-        self.assertEqual(self.c.presence_at("doctor", "d1", MON), "a")
-        self.assertEqual(self.c.presence_at("doctor", "d1", wed), "b")
-        self.assertIsNone(self.c.presence_at("doctor", "d1", date(2026, 11, 24)))      # no usual place on Tuesday
-        self.assertEqual((r["set"], r["kept"]), (2, 1))
-        self.assertEqual(self.c.presence_at("staff", "s1", wed), None)  # A is closed on Wednesdays (test clinic: Mondays only)
-        self.assertEqual(r["closed"], 2)                                # s1 usually at A: closed Tuesday and Wednesday
-        r = self.c.apply_usual(MON, MON, overwrite=True)               # overwrite replaces the exception
         self.assertEqual(self.c.presence_at("staff", "s1", MON), "a")
-        self.assertEqual(self.c.apply_usual(MON, MON, location_id="b", dry_run=True)["set"], 0)
-        with self.assertRaises(ClinicError):
-            self.c.apply_usual(wed, MON)
-        with self.assertRaises(ClinicError):
-            self.c.apply_usual(MON, date(2028, 1, 1))
+        self.assertEqual((self.c.presence_at("doctor", "d1", MON), self.c.presence_at("doctor", "d1", wed)), ("a", "b"))
+        self.assertIsNone(self.c.presence_at("doctor", "d1", date(2026, 11, 24)))        # no usual place on Tuesday
+        self.assertIsNone(self.c.presence_at("staff", "s1", wed))                        # A is closed on Wednesdays
+        self.assertIsNone(self.c.presence_at("staff", "s2", MON))                        # no usual location: not anywhere
+        self.assertEqual(self.c.presence, {})                                            # nothing stored for any of it
+        self.assertEqual(self.c.staff_capacity("a", MON)[40], 1)                         # and they count as staff there
+        rows = {p["id"]: p for p in self.c.timetable("a", MON)["staff"]}
+        self.assertTrue(rows["s1"]["here"])
+
+    def test_exceptions_override_the_usual_location_and_are_all_that_is_stored(self):
+        self.c.presence.clear()
+        self.c.staff["s1"].usual_location_id = "a"
+        tick(self.c, "staff", "s1", "b")                               # works at B today instead
+        self.assertEqual(self.c.presence_at("staff", "s1", MON), "b")
+        self.assertEqual(self.c.presence, {("staff", "s1", MON): "b"})
+        tick(self.c, "staff", "s1", None)                              # off today
+        self.assertIsNone(self.c.presence_at("staff", "s1", MON))
+        self.assertEqual(self.c.presence, {("staff", "s1", MON): None})
+        self.assertEqual(self.c.staff_capacity("a", MON)[40], 0)
+        tick(self.c, "staff", "s1", "a")                               # back where they usually are: the exception goes
+        self.assertEqual(self.c.presence, {})
+        # a floater (no usual location) who is un-ticked leaves nothing behind either
+        tick(self.c, "staff", "s2", "a")
+        tick(self.c, "staff", "s2", None)
+        self.assertEqual(self.c.presence, {})
+        # exceptions survive save and load, "off" included
+        tick(self.c, "staff", "s1", None)
+        again = Clinic.from_groups(self.c.to_groups())
+        self.assertEqual(again.presence, {("staff", "s1", MON): None})
+        self.assertEqual(self.c.to_groups()["schedule"]["presence"][str(MON)]["staff"], {"s1": None})
 
     def test_usual_locations_survive_save_and_load_and_are_validated(self):
         self.c.staff["s1"].usual_location_id = "b"

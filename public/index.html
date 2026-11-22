@@ -478,8 +478,9 @@ async function viewTimetable() {
   }
   const section = (title, rows, sub, role) => `<h4>${title}</h4>` + (rows.length ? rows.map(r => rowHtml(r, sub?.(r), role)).join("") : `<div class="muted">none</div>`);
   const people = list => [...list.filter(r => r.here), ...list.filter(r => !r.here)];
-  // the small text after a name: where they usually are (doctors: on this weekday), else where they are today
-  const away = r => r.usual ? `· Usually ${locName(r.usual)}${r.here && r.usual !== S.location ? " (here today)" : ""}`
+  // the small text after a name: where they usually are (doctors: on this weekday), and how today differs
+  const away = r => r.usual ? `· Usually ${locName(r.usual)}${r.here ? (r.usual !== S.location ? " (here today)" : "")
+      : r.at ? ` (at ${locName(r.at)} today)` : r.default ? " (off today)" : ""}`
     : r.here ? "" : r.at ? `(at ${locName(r.at)})` : "(off today)";
 
   $("#main").innerHTML = `<div class="tt-layout"><div class="tt-main">
@@ -487,7 +488,6 @@ async function viewTimetable() {
       <label>Location <select id="loc">${locs().map(l => `<option value="${l.id}" ${l.id === S.location ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></label>
       <label>Date <input type="date" id="tt-date" value="${esc(S.date)}"></label>
       <button class="btn ${S.editAvail ? "" : "secondary"}" id="edit-toggle">${S.editAvail ? "Done editing" : "Edit availability"}</button>
-      <button class="btn secondary" id="usual-day" title="Tick in the doctors and staff who usually work at ${esc(t.location)} on this weekday (people already ticked in somewhere today are left alone)">Tick in usual people</button>
       <button class="btn danger" id="clear-day" title="Remove all bookings and blocked times for ${esc(t.location)} on ${esc(S.date)}">Clear day…</button>
       <div><b>${esc(t.location)}</b> · ${t.hours ? `open ${t.hours[0]}–${t.hours[1]}` : "<span style='color:var(--bad)'>closed this day</span>"}</div>
     </div>
@@ -509,13 +509,6 @@ async function viewTimetable() {
   $("#tt-date").onchange = e => { if (e.target.value) { S.date = e.target.value; render(); } };
   $(".tt").classList.toggle("edit", S.editAvail);
   $("#edit-toggle").onclick = () => { S.editAvail = !S.editAvail; viewTimetable(); };
-  $("#usual-day").onclick = () => guard(async () => {
-    const r = await api("POST", "/api/apply-usual", { start: S.date, location_id: S.location });
-    await loadClinic(); await viewTimetable();
-    banner(r.set ? "ok" : "warn", r.set ? `Ticked in ${r.set} ${r.set === 1 ? "person" : "people"} who usually work at ${esc(t.location)} on this weekday.`
-      : r.closed ? `${esc(t.location)} is closed on ${esc(S.date)}, so nobody was ticked in.`
-      : r.kept ? `Everyone who usually works at ${esc(t.location)} on this weekday is already ticked in somewhere today.` : `Nobody has ${esc(t.location)} as their usual location on this weekday.`, 5000);
-  });
   $("#clear-day").onclick = () => guard(async () => {
     const body = { location_id: S.location, date: S.date }, where = `${t.location} on ${S.date}`;
     const p = await api("POST", "/api/clear-day", { ...body, dry_run: true });
@@ -557,7 +550,15 @@ const MINUTES = Array.from({ length: 17 }, (_, i) => i * 15);          // 0, 15 
 const minOpts = sel => MINUTES.map(m => `<option value="${m}" ${m === +sel ? "selected" : ""}>${m}</option>`).join("");
 // Every treatment row belongs to a clinic (location): its rooms, the staff ticked in there and its opening hours all follow it.
 const roomsAt = loc => byId(locs(), loc)?.rooms || [];
-const staffAt = (loc, iso) => { const at = S.clinic.presence?.[iso]?.staff || {}; return S.clinic.staff.filter(x => at[x.id] === loc); };
+// Where someone is on a day: a roster exception if there is one (null = off), else their usual location if it is open that day.
+const whereIs = (role, p, iso) => {
+  const ov = S.clinic.presence?.[iso]?.[role === "doctor" ? "doctors" : "staff"] || {};
+  if (p.id in ov) return ov[p.id];
+  const loc = p.usual_locations?.[WEEKDAY_KEYS[(new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7]] || p.usual_location_id || null;
+  const l = loc && byId(locs(), loc);
+  return l && hoursOn(l, iso) ? loc : null;
+};
+const staffAt = (loc, iso) => S.clinic.staff.filter(x => whereIs("staff", x, iso) === loc);
 const clinicName = loc => byId(locs(), loc)?.name || loc;
 const fitRoom = (presetId, loc) => { const t = byId(S.clinic.treatments, presetId), rooms = roomsAt(loc);
   return (t && rooms.find(r => t.required_equipment.every(e => r.equipment.includes(e))))?.id || rooms[0]?.id || null; };
@@ -886,7 +887,7 @@ function renderEditBar() {
 const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const mondayOf = iso => addDays(iso, -((new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7));
 async function viewRoster() {
-  const F = S.rosterForm; F.from ||= S.date; F.to ||= S.date; F.ufrom ||= S.date; F.uto ||= addDays(S.date, 27);
+  const F = S.rosterForm; F.from ||= S.date; F.to ||= S.date;
   S.weekOf = mondayOf(S.weekOf || S.date);
   const [roster, {bookings}] = await Promise.all([api("GET", `/api/roster?start=${S.weekOf}&days=7`), api("GET", `/api/bookings?date=${S.date}`)]);
   const dayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], dayShort = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -899,7 +900,7 @@ async function viewRoster() {
   const everyone = roster.people.map(p => ({...p, key: p.role + ":" + p.id}));
   F.who ||= everyone[0]?.key;
   const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-  const cell = (p, i) => `<td><select data-role="${p.role}" data-id="${p.id}" data-date="${roster.dates[i]}" class="${p.at[i] ? "set" : ""}${p.at[i] && p.usual[i] && p.at[i] !== p.usual[i] ? " exc" : ""}" ${p.usual[i] ? `title="Usually ${esc(clinicName(p.usual[i]))}${p.at[i] && p.at[i] !== p.usual[i] ? " (exception today)" : ""}"` : ""}>
+  const cell = (p, i) => `<td><select data-role="${p.role}" data-id="${p.id}" data-date="${roster.dates[i]}" class="${p.at[i] ? "set" : ""}${p.at[i] !== p.default[i] ? " exc" : ""}" ${p.usual[i] ? `title="Usually ${esc(clinicName(p.usual[i]))}${p.at[i] !== p.default[i] ? " (exception today)" : ""}"` : ""}>
       <option value="">—</option>${locs().map(l => `<option value="${l.id}" ${p.at[i] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("")}</select></td>`;
   const rows = role => everyone.filter(p => p.role === role).map(p => `<tr><td>${esc(p.name)}${usualText(p) ? ` <span class="muted">· ${esc(usualText(p))}</span>` : ""}</td>${roster.dates.map((_, i) => cell(p, i)).join("")}</tr>`).join("");
   $("#main").innerHTML = `
@@ -910,16 +911,8 @@ async function viewRoster() {
       <table class="roster"><tr><th></th>${roster.dates.map((d, i) => `<th>${dayNames[i]} ${d.slice(8)}</th>`).join("")}</tr>
         <tr class="group"><td colspan="8">Doctors</td></tr>${rows("doctor") || `<tr><td colspan="8" class="muted">none</td></tr>`}
         <tr class="group"><td colspan="8">Staff</td></tr>${rows("staff") || `<tr><td colspan="8" class="muted">none</td></tr>`}</table>
-      <div class="muted" style="margin-top:8px">Pick the one location each person is at that day, or “—” if they are not in any location. Anyone in a location is free all day there unless booked or blocked. The same thing is the tick box on the Timetable tab.</div>
+      <div class="muted" style="margin-top:8px">Pick the one location each person is at that day, or “—” if they are not in any location. Anyone in a location is free all day there unless booked or blocked. The same thing is the tick box on the Timetable tab. People with a usual location are there automatically on the days it is open; changing a day here makes it an exception (outlined in orange), and picking their usual location again removes the exception.</div>
     </div>
-    <div class="card"><h3>Tick in everyone at their usual location</h3>
-      <div class="row">
-        <label>First date <input type="date" id="u-from" value="${F.ufrom}"></label>
-        <label>Last date <input type="date" id="u-to" value="${F.uto}"></label>
-        <label style="flex-direction:row;align-items:center;gap:6px" title="Off: days where someone is already ticked in somewhere (your exceptions) are left as they are."><input type="checkbox" id="u-over" ${F.uover ? "checked" : ""}>Also replace days already set</label>
-        <button class="btn" id="u-apply">Apply usual locations</button>
-      </div>
-      <div class="muted" style="margin-top:6px">Puts each doctor and staff member at the location they usually work at (their usual location, or the one for that weekday), on days that location is open. Exceptions you ticked by hand stay unless you choose to replace them; you can still move anyone for a single day.</div></div>
     <div class="card"><h3>Set a location for many days</h3>
       <div class="row">
         <label>Who <select id="f-who">${everyone.map(p => `<option value="${p.key}" ${p.key === F.who ? "selected" : ""}>${esc(p.name)} (${p.role})</option>`).join("")}</select></label>
@@ -946,18 +939,6 @@ async function viewRoster() {
     if (t.dataset.assign) return guard(async () => { await assignStaffRoster(t.dataset.assign, t.dataset.step, t.value); });
     if (t.matches("table.roster select")) savePresence(t.dataset.role, t.dataset.id, [t.dataset.date], t.value); };
   $("#f-who").onchange = e => F.who = e.target.value;
-  $("#u-from").onchange = e => F.ufrom = e.target.value;
-  $("#u-to").onchange = e => F.uto = e.target.value;
-  $("#u-over").onchange = e => F.uover = e.target.checked;
-  $("#u-apply").onclick = () => guard(async () => {
-    if (!F.ufrom || !F.uto) throw new Error("Choose the first and last date");
-    const body = { start: F.ufrom, end: F.uto, overwrite: !!F.uover }, p = await api("POST", "/api/apply-usual", { ...body, dry_run: true });
-    if (!p.set) { banner("warn", `Nothing to tick in: ${p.kept} person-day(s) already set${p.closed ? `, ${p.closed} on days the usual location is closed` : ""}.`, 5000); return; }
-    if (!confirm(`Tick people in at their usual location from ${F.ufrom} to ${F.uto}?\n\n${p.set} person-day(s) will be set${F.uover ? " (replacing what is there)" : ""}; ${p.kept} already set${F.uover ? " and already right" : " (left alone)"}; ${p.closed} skipped because their usual location is closed.\n\nThis only changes memory until you Save…`)) return;
-    const r = await api("POST", "/api/apply-usual", body);
-    await loadClinic(); await viewRoster();
-    if (!S.issues.length) banner("ok", `Ticked in ${r.set} person-day(s) at their usual location.`, 4000);
-  });
   $("#f-loc").onchange = e => F.location = e.target.value;
   $("#f-from").onchange = e => F.from = e.target.value;
   $("#f-to").onchange = e => F.to = e.target.value;
