@@ -106,6 +106,14 @@
   table.roster select { padding: 3px 4px; min-width: 96px; }
   table.roster select.set { background: var(--free); border-color: var(--free-line); }
   table.roster select.exc { border-color: var(--away-text); box-shadow: inset 0 0 0 1px var(--away-text); }   /* not at their usual location */
+  table.training td, table.training th { text-align: center; padding: 6px 10px; }
+  table.training td:first-child, table.training th:first-child { text-align: left; white-space: nowrap; }
+  table.training th small { display: block; font-weight: 400; color: var(--muted); }
+  table.training td.t-yes { background: var(--free); }                          /* trained, and the equipment needs it */
+  table.training td.t-spare { background: color-mix(in srgb, var(--free) 35%, transparent); }   /* trained, though nothing requires it (yet) */
+  table.training td.t-no { background: repeating-linear-gradient(135deg, var(--off), var(--off) 4px, transparent 4px, transparent 8px); }   /* needs training and they have none */
+  table.training input { width: 17px; height: 17px; cursor: pointer; }
+  table.training tr.need-row td { background: var(--bg); font-size: 12px; color: var(--muted); }
   table.roster tr.group td { background: var(--bg); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
   .tt-layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; align-items: start; }
   .tt-main { min-width: 0; }
@@ -216,7 +224,7 @@
 <main id="main"></main>
 
 <script>
-const TABS = [["timetable", "Timetable"], ["roster", "Roster & bookings"], ["setup", "Setup & save"]];
+const TABS = [["timetable", "Timetable"], ["roster", "Roster & bookings"], ["training", "Staff training"], ["setup", "Setup & save"]];
 const S = { stateless: false, auth: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 
@@ -427,7 +435,7 @@ $("#date").onchange = e => { if (e.target.value) { S.date = e.target.value; rend
 async function render() {
   renderNav(); $("#date").value = S.date; $("#date-wrap").hidden = S.tab !== "roster"; $("#main").classList.toggle("wide", S.tab === "timetable");
   await guard(async () => { await ({timetable: viewTimetable,
-                                    roster: viewRoster, setup: viewSetup})[S.tab](); });
+                                    roster: viewRoster, training: viewTraining, setup: viewSetup})[S.tab](); });
 }
 
 const LABEL = 250;  // px width of the name column in timetable rows
@@ -893,6 +901,38 @@ function renderEditBar() {
       if (!S.issues.length) banner("ok", `${esc(name)} ${start}–${end} updated${r.days > 1 ? ` for ${r.days} weeks` : ""}.`, 3000);
     });
   };
+}
+
+// ---------- staff training: who may work with which equipment ----------
+async function viewTraining() {
+  const staff = S.clinic.staff, needs = new Set(S.clinic.equipment_needing_training || []);
+  const tags = new Map();   // equipment tag -> rooms that have it
+  for (const l of locs()) for (const r of l.rooms || []) for (const e of r.equipment || []) (tags.get(e) || tags.set(e, []).get(e)).push(r.name.toUpperCase() === toolName(e) ? l.name : `${r.name} (${l.name})`);
+  for (const e of needs) if (!tags.has(e)) tags.set(e, []);
+  for (const p of staff) for (const e of p.skills || []) if (!tags.has(e)) tags.set(e, []);
+  const cols = [...tags.keys()].sort((a, b) => (needs.has(b) - needs.has(a)) || a.localeCompare(b));
+  const trained = e => staff.filter(p => (p.skills || []).includes(e));
+  const summary = cols.filter(e => needs.has(e)).map(e => { const who = trained(e);
+    return `<li><b>${esc(toolName(e))}</b> <span class="muted">· ${esc((tags.get(e) || []).join(", ") || "no room has it")}</span> · trained: ${who.length ? esc(who.map(p => p.name).join(", ")) : "<b style='color:var(--bad)'>nobody, so the doctor and staff steps in these rooms can't be staffed</b>"}</li>`; }).join("");
+  const cell = (p, e) => { const has = (p.skills || []).includes(e);
+    return `<td class="${needs.has(e) ? (has ? "t-yes" : "t-no") : (has ? "t-spare" : "")}"><input type="checkbox" data-skill="${esc(p.id)}" data-tag="${esc(e)}" ${has ? "checked" : ""} title="${esc(p.name)} ${has ? "is" : "is not"} trained on ${esc(toolName(e))}"></td>`; };
+  $("#main").innerHTML = `<div class="card"><h3>Staff training</h3>
+      <div class="muted" style="margin-bottom:10px">Some equipment may only be used with trained staff. Tick <b>needs training</b> for such equipment, then tick who is trained on it. In a room with that equipment, the doctor-treatment and staff-treatment steps need a trained person (numbing doesn't); a booking is refused when none is free. Changes are kept in memory until you <b>Save…</b> (top bar); they are written to <code>resources.json</code>.</div>
+      ${cols.length ? `<div style="overflow-x:auto"><table class="training"><tr><th></th>${cols.map(e => `<th>${esc(toolName(e))}<small>${esc((tags.get(e) || []).join(", ") || "no room has it")}</small></th>`).join("")}</tr>
+        <tr class="need-row"><td>Needs training</td>${cols.map(e => `<td><input type="checkbox" data-need="${esc(e)}" ${needs.has(e) ? "checked" : ""} title="Only trained staff may work with ${esc(toolName(e))}"></td>`).join("")}</tr>
+        ${staff.map(p => `<tr><td>${esc(p.name)}</td>${cols.map(e => cell(p, e)).join("")}</tr>`).join("")}</table></div>
+        <div class="muted" style="margin-top:8px"><span class="pill yes">green</span> trained, and it is needed · pale green: trained, though nothing requires it yet · hatched: training is needed and they don't have it.</div>`
+        : `<div class="muted">No room has any equipment yet. Add equipment to rooms under Setup &amp; save (<code>rooms[].equipment</code> in resources.json).</div>`}
+    </div>
+    <div class="card"><h3>Who can work with what</h3>${summary ? `<ul style="list-style:none;padding:0;margin:0;display:grid;gap:6px">${summary}</ul>` : `<div class="muted">No equipment needs trained staff, so any staff member can work in any room.</div>`}</div>`;
+  $("#main").onchange = e => { const el = e.target;
+    if (el.dataset.need !== undefined) {
+      const next = new Set(needs); el.checked ? next.add(el.dataset.need) : next.delete(el.dataset.need);
+      guard(async () => { await api("PUT", "/api/training", { equipment_needing_training: [...next].sort() }); await loadClinic(); await viewTraining(); });
+    } else if (el.dataset.skill !== undefined) {
+      const p = byId(S.clinic.staff, el.dataset.skill), next = new Set(p.skills || []); el.checked ? next.add(el.dataset.tag) : next.delete(el.dataset.tag);
+      guard(async () => { await api("PUT", "/api/training", { skills: { [p.id]: [...next].sort() } }); await loadClinic(); await viewTraining(); });
+    } };
 }
 
 // ---------- roster (who is at which location each day) & bookings ----------

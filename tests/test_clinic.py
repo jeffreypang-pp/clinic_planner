@@ -939,6 +939,20 @@ class BookListTests(unittest.TestCase):
         self.assertTrue(any("Not enough staff trained in LASER" in i for i in out), out)
         self.assertTrue(any(self.c.timetable("a", MON)["staff_total"]["skill_short"]))
 
+    def test_training_can_be_edited(self):
+        self.c.set_training(["laser"], {"s1": ["laser"]})
+        self.assertEqual((self.c.training_equipment, self.c.staff["s1"].skills, self.c.staff["s2"].skills), ({"laser"}, {"laser"}, set()))
+        self.c.set_training(skills={"s2": ["laser", " laser "]})                      # only the people named change; tidy duplicates
+        self.assertEqual((self.c.training_equipment, self.c.staff["s1"].skills, self.c.staff["s2"].skills), ({"laser"}, {"laser"}, {"laser"}))
+        self.c.set_training([])                                                        # nothing needs training any more
+        self.assertEqual(self.c.training_equipment, set())
+        self.assertEqual(self.c.staff["s1"].skills, {"laser"})                         # skills are kept for later
+        before = (set(self.c.training_equipment), {k: set(v.skills) for k, v in self.c.staff.items()})
+        for args in ((["laser"], {"ghost": []}), ("laser", None), ([""], None), (None, {"s1": "laser"}), (None, ["s1"])):
+            with self.assertRaises(ClinicError, msg=str(args)):
+                self.c.set_training(*args)
+        self.assertEqual((set(self.c.training_equipment), {k: set(v.skills) for k, v in self.c.staff.items()}), before)   # all-or-nothing
+
     def test_training_survives_save_and_load_and_is_validated(self):
         self.trained_laser()
         res = self.c.to_groups()["resources"]

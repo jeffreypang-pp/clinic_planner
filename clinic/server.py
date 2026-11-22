@@ -373,6 +373,13 @@ class App:
             self.clinic.set_presence(role, pid, d, loc)
         return {"days": len(dates), "issues": self.clinic.issues()}
 
+    def put_training(self, q, body):
+        """Edit staff training: ``equipment_needing_training`` (list) and/or ``skills`` ({staff_id: [equipment]})."""
+        if not isinstance(body, dict) or not ({"equipment_needing_training", "skills"} & set(body)):
+            raise ClinicError("Give equipment_needing_training and/or skills")
+        self.clinic.set_training(body.get("equipment_needing_training"), body.get("skills"))
+        return {"issues": self.clinic.issues()}
+
     def get_roster(self, q, body):
         return self.clinic.roster(_arg(q, "start"), int(q.get("days", ["7"])[0]))
 
@@ -444,6 +451,7 @@ ROUTES = [
     ("DELETE", r"/api/bookings/([\w-]+)", "delete_booking"),
     ("PUT", r"/api/bookings/([\w-]+)/staff", "put_booking_staff"),
     ("PUT", r"/api/presence", "put_presence"),
+    ("PUT", r"/api/training", "put_training"),
     ("GET", r"/api/roster", "get_roster"),
     ("PUT", r"/api/availability", "put_availability"),
     ("PUT", r"/api/locations/([\w-]+)/hours", "put_hours"),

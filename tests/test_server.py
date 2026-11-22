@@ -134,6 +134,20 @@ class ServerTests(unittest.TestCase):
         mine = next(b for b in saved.bookings.values() if b.name == "Mine")
         self.assertEqual((mine.room_id, mine.numbing_slots, mine.doctor_slots, mine.staff_slots), ("central_laser_b", 1, 2, 1))
 
+    def test_staff_training_can_be_edited_through_the_api(self):
+        before = self.disk()
+        sid = next(iter(self.app.clinic.staff))
+        status, r = self.call("PUT", "/api/training", {"equipment_needing_training": ["laser"], "skills": {sid: ["laser"]}})
+        self.assertEqual(status, 200)
+        c = self.app.clinic
+        self.assertEqual((c.training_equipment, c.staff[sid].skills), ({"laser"}, {"laser"}))
+        self.assertEqual(self.call("GET", "/api/clinic")[1]["clinic"]["equipment_needing_training"], ["laser"])
+        self.assertEqual(self.disk(), before)                                          # in memory until saved
+        self.assertEqual(self.call("PUT", "/api/training", {})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/training", {"skills": {"nobody": []}})[0], 404)
+        self.call("POST", "/api/save", {})
+        self.assertEqual(Clinic.load_dir(self.dir).staff[sid].skills, {"laser"})
+
     def test_assigning_staff_later_via_the_api(self):
         before = self.disk()
         c = self.app.clinic

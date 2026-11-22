@@ -466,6 +466,29 @@ class Clinic:
         return cap
 
     # ---- staff training: who may work with which equipment ------------------------
+    def set_training(self, equipment_needing_training=None, skills: dict | None = None) -> None:
+        """Edit the training set-up: which equipment needs trained staff, and/or who is trained on what
+        (``skills`` = ``{staff_id: [equipment tags]}``; only the staff named are changed).  Validates
+        everything first, then applies it, so a bad request changes nothing.  Existing bookings are
+        never touched; ``issues()`` says if they no longer have trained staff."""
+        def tags(value, what):
+            if not isinstance(value, (list, tuple, set)) or not all(isinstance(x, str) and x.strip() for x in value):
+                raise ClinicError(f"{what} must be a list of equipment names")
+            return {x.strip() for x in value}
+        new_equipment = tags(equipment_needing_training, "equipment_needing_training") \
+            if equipment_needing_training is not None else None
+        new_skills = {}
+        if skills is not None:
+            if not isinstance(skills, dict):
+                raise ClinicError("skills must be {staff_id: [equipment names]}")
+            for sid, value in skills.items():
+                self._get(self.staff, sid, "staff")
+                new_skills[sid] = tags(value, f"skills of {sid}")
+        if new_equipment is not None:
+            self.training_equipment = new_equipment
+        for sid, value in new_skills.items():
+            self.staff[sid].skills = value
+
     def _skills_needed(self, room_id: str | None, step_name: str) -> frozenset:
         """Equipment tags the staff member of this step must be trained on (empty = anyone)."""
         room = self.rooms.get(room_id) if room_id else None
