@@ -494,7 +494,7 @@ async function viewTimetable() {
     let html = `<div class="tt-row skill-head" style="${cols}"><div class="tt-label"><button class="link tog" data-skilltoggle title="${open ? "Collapse" : "Show"} the rows for staff trained on equipment">${open ? "▾" : "▸"}</button> <b>Trained staff</b> <small>${rows.length} equipment${open ? "" : " (collapsed)"}</small></div></div>`;
     if (!open) return html;
     for (const r of rows) {
-      html += `<div class="tt-row skill-row" style="${cols}"><div class="tt-label" title="Trained staff needed in each 15-minute block for treatments in rooms with ${esc(r.name)} (doctor and staff steps), against trained staff ticked in and not blocked">${esc(r.name)} staff <small>needed</small></div>`;
+      html += `<div class="tt-row skill-row" style="${cols}"><div class="tt-label" title="${esc(r.name)}-trained staff in use in each 15-minute block: the doctor and staff steps in rooms with ${esc(r.name)}, plus any step done by a named ${esc(r.name)}-trained person (they are busy then, even if the step doesn't use ${esc(r.name)}). Compared with the trained staff ticked in here and not blocked. ${r.working} trained staff are ticked in here today.">${esc(r.name)} staff <small>${r.working} trained here today</small></div>`;
       for (let i = lo; i < hi; i++) {
         const need = r.needed[i], have = r.available[i];
         const cls = need === 0 ? "none" : need > have ? "over" : need === have ? "full" : "ok";

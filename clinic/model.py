@@ -546,15 +546,21 @@ class Clinic:
         return not all(place(d, set()) for d in order)
 
     def skill_rows(self, loc_id: str, day: Date) -> list[dict]:
-        """For each equipment that needs training and is in a room at the location: per slot, how many
-        trained staff the treatments need (named or not) and how many trained staff are available."""
+        """For each equipment that needs training and is in a room at the location: per slot, how many of
+        its trained staff are in use (steps in rooms that need the training, plus any step that names a
+        trained person) and how many are available; ``working`` = trained staff ticked in here that day."""
         tags = sorted({t for r in self.rooms.values() if r.location_id == loc_id
                        for t in r.equipment & self.training_equipment})
         if not tags:
             return []
         demands, pool = self._slot_demands(loc_id, day), self._staff_pool(loc_id, day)
         return [{"tag": tag, "name": _pretty([tag])[0],
-                 "needed": [sum(1 for _sid, skills in demands[i] if tag in skills) for i in range(SLOTS_PER_DAY)],
+                 # a step uses up one trained person if its room needs the training, or if a trained person is
+                 # named for it (they are busy then, whatever the room)
+                 "needed": [sum(1 for sid, skills in demands[i]
+                                if tag in skills or (sid and tag in self.staff[sid].skills)) for i in range(SLOTS_PER_DAY)],
+                 "working": sum(1 for sid in self.staff
+                                if tag in self.staff[sid].skills and self.presence_at("staff", sid, day) == loc_id),
                  "available": [sum(1 for sid in pool[i] if tag in self.staff[sid].skills) for i in range(SLOTS_PER_DAY)]}
                 for tag in tags]
 
@@ -570,6 +576,8 @@ class Clinic:
 
     def _skill_problem(self, plan: "Plan", room_id: str, ignore: str | None) -> str | None:
         """Why the staff steps of ``plan`` can't be done in this room for lack of trained staff."""
+        if not self.training_equipment:
+            return None
         room, loc = self.rooms[room_id], self.locations[plan.location_id]
         extra = []
         for st in plan.steps():
@@ -578,16 +586,21 @@ class Clinic:
                 return (f"{self.staff[sid].name} is not trained in {', '.join(_pretty(self._untrained(sid, skills), self))} "
                         f"(needed for the {st.label.lower()} in {room.name})")
             extra.append((st.start, st.end, sid, skills))
-        if not any(skills for *_rest, skills in extra):
-            return None
         demands, pool = self._slot_demands(plan.location_id, plan.day, ignore, extra), self._staff_pool(plan.location_id, plan.day)
         for start, end, _sid, skills in extra:
             for i in range(start, end):
-                if skills and self._skills_unmatched(demands[i], pool[i]):
+                if not self._skills_unmatched(demands[i], pool[i]):
+                    continue
+                if skills:
                     trained = sum(1 for sid in pool[i] if skills <= self.staff[sid].skills)
                     return (f"No staff trained in {', '.join(_pretty(sorted(skills), self))} is free for the "
-                            f"{next(st.label for st in plan.steps() if st.start <= i < st.end).lower()} in {room.name} at "
+                            f"{next(st.label.lower() for st in plan.steps() if st.start <= i < st.end)} in {room.name} at "
                             f"{format_slot(i)} ({trained} trained staff ticked in at {loc.name}, the rest are busy or blocked)")
+                # this step needs no training itself, but using someone (named, or just one more person) would leave
+                # too few trained staff for a treatment that is already booked
+                tags = sorted({t for _s, sk in demands[i] for t in sk})
+                return (f"This would leave too few staff trained in {', '.join(_pretty(tags, self))} at {format_slot(i)} "
+                        f"for the treatments already booked at {loc.name}")
         return None
 
     def staff_demand(self, loc_id: str, day: Date, ignore: str | None = None) -> list[int]:

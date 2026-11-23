@@ -953,6 +953,27 @@ class BookListTests(unittest.TestCase):
         self.c.set_blocked("staff", "s1", MON, t("10:15"), t("10:30"), True)
         self.assertEqual(self.c.timetable("a", MON)["skill_rows"][0]["available"][t("10:15")], 0)
 
+    def test_a_named_trained_person_uses_up_a_trained_slot_whatever_the_room(self):
+        self.trained_laser()
+        plain = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain", start="12:00")
+        self.assertEqual(self.run_list([dict(plain, staff={"staff": "s2"})])["results"][0]["status"], "booked")   # untrained: no effect
+        row = self.c.timetable("a", MON)["skill_rows"][0]
+        self.assertEqual(max(row["needed"]), 0)
+        self.assertEqual(self.run_list([dict(plain, start="13:00", staff={"staff": "s1"})])["results"][0]["status"], "booked")
+        row = self.c.timetable("a", MON)["skill_rows"][0]        # s1 is trained on LASER, so LASER's trained staff are one more in use
+        self.assertEqual([row["needed"][t(x)] for x in ("12:30", "13:00", "13:15", "13:30")], [0, 1, 1, 0])
+        self.assertEqual(row["working"], 1)                       # s1 is the only trained person ticked in here today
+
+    def test_naming_the_trained_person_elsewhere_is_refused_if_it_leaves_a_laser_treatment_unstaffed(self):
+        self.trained_laser()
+        self.c.book_custom("a", MON, t("10:00"), 15, 30, 15, "a_laser")           # doctor step 10:15-10:45 needs a trained person: only s1
+        plain = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain", start="10:15")
+        bad = self.run_list([dict(plain, staff={"staff": "s1"})], dry_run=True)["results"][0]
+        self.assertEqual(bad["status"], "failed")
+        self.assertTrue(any("too few staff trained in LASER" in r for r in bad["reasons"]), bad["reasons"])
+        self.assertEqual(self.run_list([dict(plain, staff={"staff": "s2"})], dry_run=True)["results"][0]["status"], "booked")
+        self.assertEqual(self.run_list([dict(plain, start="11:30", staff={"staff": "s1"})], dry_run=True)["results"][0]["status"], "booked")
+
     def test_training_can_be_edited(self):
         self.c.set_training(["laser"], {"s1": ["laser"]})
         self.assertEqual((self.c.training_equipment, self.c.staff["s1"].skills, self.c.staff["s2"].skills), ({"laser"}, {"laser"}, set()))
