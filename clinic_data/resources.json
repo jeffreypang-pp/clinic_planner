@@ -73,8 +73,8 @@
       }
     },
     {
-      "id": "lim",
-      "name": "Dr Lim",
+      "id": "tan",
+      "name": "Dr Tan",
       "usual_locations": {
         "mon": "orchard",
         "tue": "asia_square",
