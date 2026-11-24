@@ -103,7 +103,7 @@ class ServerTests(unittest.TestCase):
 
     def test_book_list_stops_at_first_failure_and_is_unsaved_until_saved(self):
         before = self.disk()
-        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()   # a Monday; Dr Lim is the botox doctor at Central
+        day = next(iter(self.app.clinic.bookings.values())).date.isoformat()   # a Monday; Dr Tan is the botox doctor at Central
         items = [{"treatment_id": "botox", "start": "14:00", "client": "One"},
                  {"treatment_id": "botox", "start": "14:00", "client": "Two"},   # same doctor, same time
                  {"treatment_id": "consult", "start": "16:00"}]

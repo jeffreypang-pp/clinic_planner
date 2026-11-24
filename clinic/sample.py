@@ -7,7 +7,7 @@ from .model import Clinic, WEEKDAYS, parse_time
 
 # weekday (0=Mon) -> the one location the doctor is at that day (missing = not working)
 DOCTOR_ROSTER = {
-    "lim": {0: "central", 1: "central", 2: "riverside", 3: "central", 4: "northgate", 5: "central"},
+    "tan": {0: "central", 1: "central", 2: "riverside", 3: "central", 4: "northgate", 5: "central"},
     "patel": {0: "riverside", 1: "northgate", 2: "central", 3: "riverside", 4: "central", 5: "northgate"},
     "okafor": {0: "central", 1: "riverside", 2: "northgate", 3: "northgate", 4: "riverside", 5: "riverside"},
 }
@@ -58,7 +58,7 @@ def build_sample(start: date | None = None, days: int = 28) -> Clinic:
              "required_equipment": ["hydrafacial"]},
         ],
         "doctors": [
-            {"id": "lim", "name": "Dr Lim",
+            {"id": "tan", "name": "Dr Tan",
              "treatments": ["consult", "botox", "filler", "laser_hair", "pico"]},
             {"id": "patel", "name": "Dr Patel",
              "treatments": ["consult", "botox", "filler", "hifu", "rf_needling"]},

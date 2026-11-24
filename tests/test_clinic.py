@@ -1160,7 +1160,7 @@ class GroupTests(unittest.TestCase):
         with self.assertRaises(ClinicError):
             Clinic.from_groups(bad)
         bad = json.loads(json.dumps(g))
-        bad["schedule"]["presence"] = {"2026-11-23": {"doctors": {"lim": "nowhere"}}}
+        bad["schedule"]["presence"] = {"2026-11-23": {"doctors": {"tan": "nowhere"}}}
         with self.assertRaises(ClinicError):
             Clinic.from_groups(bad)
         bad = json.loads(json.dumps(g))
