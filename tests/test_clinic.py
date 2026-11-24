@@ -5,7 +5,7 @@ import time
 import unittest
 from datetime import date
 
-from clinic.model import (Clinic, ClinicError, NotFound, GROUP_FILES, format_slot, parse_time)
+from clinic.model import (Clinic, ClinicError, NotFound, GROUP_FILES, Staff, format_slot, parse_time)
 from clinic.sample import build_sample
 
 MON = date(2026, 11, 23)  # a Monday
@@ -973,6 +973,29 @@ class BookListTests(unittest.TestCase):
         self.assertTrue(any("too few staff trained in LASER" in r for r in bad["reasons"]), bad["reasons"])
         self.assertEqual(self.run_list([dict(plain, staff={"staff": "s2"})], dry_run=True)["results"][0]["status"], "booked")
         self.assertEqual(self.run_list([dict(plain, start="11:30", staff={"staff": "s1"})], dry_run=True)["results"][0]["status"], "booked")
+
+    def test_a_room_can_hold_several_treatments_at_once(self):
+        cust = dict(numbing_minutes=0, doctor_minutes=0, staff_minutes=30, room_id="a_plain", start="10:00")
+        self.assertEqual([x["status"] for x in self.run_list([cust, cust])["results"]], ["booked", "failed"])   # capacity 1
+        self.c.cancel_booking(next(iter(self.c.bookings)))
+        self.c.staff["s3"] = Staff("s3", "S3")                            # enough staff for three at once: only the room limits
+        tick(self.c, "staff", "s3", "a")
+        self.c.set_room_capacity("a_plain", 2)
+        out = self.run_list([cust, cust, dict(cust, start="10:15")])["results"]
+        self.assertEqual([x["status"] for x in out], ["booked", "booked", "failed"])
+        self.assertTrue(any("Plain" in r and "booked or unavailable" in r for r in out[2]["reasons"]), out[2]["reasons"])
+        row = next(r for r in self.c.timetable("a", MON)["rooms"] if r["id"] == "a_plain")
+        self.assertEqual((row["capacity"], row["cells"][t("10:00")], row["cells"][t("11:00")]), (2, "full:2:2", "free"))
+        self.assertEqual(self.c.room_use("a_plain", MON)[t("10:00")], 2)
+        self.assertEqual(self.c.issues(), [])
+        self.c.set_room_capacity("a_plain", 1)                             # lowering it flags the clash, deletes nothing
+        self.assertTrue(any("room Plain unavailable" in i for i in self.c.issues()))
+        for bad in (0, 21, "2", 1.5, True, None):
+            with self.assertRaises(ClinicError, msg=str(bad)):
+                self.c.set_room_capacity("a_plain", bad)
+        self.assertNotIn("capacity", self.c.to_groups()["resources"]["locations"][0]["rooms"][2])   # 1 = no extra key
+        self.c.set_room_capacity("a_plain", 3)
+        self.assertEqual(Clinic.from_groups(self.c.to_groups()).rooms["a_plain"].capacity, 3)
 
     def test_training_can_be_edited(self):
         self.c.set_training(["laser"], {"s1": ["laser"]})

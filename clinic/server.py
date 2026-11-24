@@ -380,6 +380,11 @@ class App:
         self.clinic.set_training(body.get("equipment_needing_training"), body.get("skills"))
         return {"issues": self.clinic.issues()}
 
+    def put_room_capacity(self, q, body):
+        """How many treatments a room can hold at the same time: ``room_id``, ``capacity``."""
+        self.clinic.set_room_capacity(_need(body, "room_id"), body.get("capacity"))
+        return {"issues": self.clinic.issues()}
+
     def get_roster(self, q, body):
         return self.clinic.roster(_arg(q, "start"), int(q.get("days", ["7"])[0]))
 
@@ -452,6 +457,7 @@ ROUTES = [
     ("PUT", r"/api/bookings/([\w-]+)/staff", "put_booking_staff"),
     ("PUT", r"/api/presence", "put_presence"),
     ("PUT", r"/api/training", "put_training"),
+    ("PUT", r"/api/room-capacity", "put_room_capacity"),
     ("GET", r"/api/roster", "get_roster"),
     ("PUT", r"/api/availability", "put_availability"),
     ("PUT", r"/api/locations/([\w-]+)/hours", "put_hours"),

@@ -57,6 +57,7 @@ FORMAT_VERSION = 1
 GROUPS = ("resources", "planning", "schedule")
 GROUP_FILES = {g: f"{g}.json" for g in GROUPS}
 BLOCK_KINDS = ("doctor", "staff", "room")
+MAX_ROOM_CAPACITY = 20
 
 
 class ClinicError(ValueError):
@@ -186,6 +187,7 @@ class Room:
     name: str
     location_id: str
     equipment: set[str] = field(default_factory=set)
+    capacity: int = 1          # how many treatments can be in the room at the same time
 
 
 @dataclass
@@ -667,10 +669,28 @@ class Clinic:
             out[step] = sid
         return out
 
+    def room_use(self, room_id: str, day: Date, ignore: str | None = None) -> list[int]:
+        """Per slot: how many treatments are in the room."""
+        use = [0] * SLOTS_PER_DAY
+        for b in self._bookings_on(day):
+            if b.room_id == room_id and b.id != ignore:
+                for i in range(b.start, min(self._end(b), SLOTS_PER_DAY)):
+                    use[i] += 1
+        return use
+
     def _room_busy(self, room_id: str, day: Date, start: int, end: int, ignore: str | None) -> bool:
-        return any(b.id != ignore and b.room_id == room_id
-                   and _overlap(start, end, b.start, self._end(b))
-                   for b in self._bookings_on(day))
+        """The room is full in some slot of ``[start, end)``: as many treatments as its capacity are already in it."""
+        cap = self.rooms[room_id].capacity
+        use = self.room_use(room_id, day, ignore)
+        return any(use[i] >= cap for i in range(start, min(end, SLOTS_PER_DAY)))
+
+    def set_room_capacity(self, room_id: str, capacity) -> None:
+        """How many treatments a room can hold at once (1-20).  Existing bookings are never touched;
+        ``issues()`` reports any that no longer fit."""
+        room = self._get(self.rooms, room_id, "room")
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or not 1 <= capacity <= MAX_ROOM_CAPACITY:
+            raise ClinicError(f"A room's capacity must be a whole number from 1 to {MAX_ROOM_CAPACITY}")
+        room.capacity = capacity
 
     def check_availability(self, treatment_id: str, location_id: str, day, start: int,
                            ignore_booking: str | None = None, staff: dict | None = None) -> dict:
@@ -1048,11 +1068,18 @@ class Clinic:
 
         def room_row(room):
             cells = with_blocks("room", room.id, list(open_cells))
-            for b in todays:
-                if b.room_id == room.id:  # a room is held for the whole treatment
-                    for i in range(b.start, self._end(b)):
-                        cells[i] = f"booked:{b.id}:all"
-            return {"id": room.id, "name": room.name, "equipment": sorted(room.equipment), "cells": cells}
+            if room.capacity == 1:
+                for b in todays:
+                    if b.room_id == room.id:  # a room is held for the whole treatment
+                        for i in range(b.start, self._end(b)):
+                            cells[i] = f"booked:{b.id}:all"
+            else:       # several treatments at once: show how many are in the room (use:n:cap = room left, full:n:cap = none)
+                use = self.room_use(room.id, day)
+                for i in range(SLOTS_PER_DAY):
+                    if use[i] and cells[i] in ("free", "blocked", "closed", "off"):
+                        cells[i] = f"{'full' if use[i] >= room.capacity else 'use'}:{use[i]}:{room.capacity}"
+            return {"id": room.id, "name": room.name, "equipment": sorted(room.equipment), "cells": cells,
+                    "capacity": room.capacity}
 
         here = [b for b in todays if b.location_id == location_id]
         lo, hi = hours if hours else (36, 76)
@@ -1215,7 +1242,8 @@ class Clinic:
                 "id": l.id, "name": l.name,
                 "opening_hours": {WEEKDAYS[wd]: hours_json(h) for wd, h in sorted(l.opening_hours.items())},
                 "date_overrides": {d.isoformat(): hours_json(h) for d, h in sorted(l.date_overrides.items())},
-                "rooms": [{"id": r.id, "name": r.name, "equipment": sorted(r.equipment)}
+                "rooms": [{"id": r.id, "name": r.name, "equipment": sorted(r.equipment),
+                           **({"capacity": r.capacity} if r.capacity != 1 else {})}
                           for r in self.rooms.values() if r.location_id == l.id],
             } for l in self.locations.values()],
             "treatments": [{
@@ -1299,7 +1327,10 @@ class Clinic:
             for r in l.get("rooms", []):
                 rid = need(r, "id", "room")
                 unique(c.rooms, rid, "room")
-                c.rooms[rid] = Room(rid, need(r, "name", f"room {rid}"), lid, set(r.get("equipment", [])))
+                cap = r.get("capacity", 1)
+                if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= MAX_ROOM_CAPACITY:
+                    raise ClinicError(f"Room {rid}: capacity must be a whole number from 1 to {MAX_ROOM_CAPACITY}")
+                c.rooms[rid] = Room(rid, need(r, "name", f"room {rid}"), lid, set(r.get("equipment", [])), cap)
 
         for t in data.get("treatments", []):
             tid = need(t, "id", "treatment")

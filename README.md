@@ -97,7 +97,7 @@ Try the Vercel behaviour locally without Vercel: `python -m clinic.server --stat
 |---|---|
 | Time | 15-minute slots (`00:00` = slot 0, `24:00` = slot 96). All times must sit on a 15-min boundary. |
 | Location | Weekly opening hours (editable) + per-date overrides (`null` = closed that day). Owns rooms. |
-| Room | Belongs to one location; has equipment tags (`laser`, `hifu`, ...). |
+| Room | Belongs to one location; has equipment tags (`laser`, `hifu`, ...) and a **capacity** (`capacity` in `resources.json`, default 1): how many treatments can be in it at the same time. A room is full in a 15-minute block when that many treatments are in it; a new treatment is refused if its room is full in any block of it (or the room is blocked). Change it with the `×` box on the room's row in the Timetable tab (kept in memory until Save…); on a room with capacity above 1 the grid cells show how many places are taken (`n`, or a blue full cell). Lowering it below existing bookings deletes nothing: the clash is reported in the issues list. |
 | Treatment | A treatment is given by three sequential step times (each a multiple of 15 min, 0 = skipped) and a room: **numbing** (1 staff) → **doctor treatment** (a doctor + 1 staff) → **staff treatment** (1 staff). **The one rule: if the doctor treatment time is 0, the numbing time must be 0.** (Doctor 0 = carried out by staff alone.) One room is held for the whole treatment. |
 | Treatment template | Optional entry in `planning.json` (`treatments`, with `numbing_minutes` / `doctor_minutes` / `staff_minutes` / `required_equipment`) plus doctor skills. Picking a template in the booking panel fills in the name and times; then its doctor skills and room equipment are enforced. Without one, any doctor and any room can be used. |
 | Doctor | Has a set of treatments they can perform (skills). Needed for the whole treatment. |
@@ -214,6 +214,7 @@ reported in `Clinic.issues()` (shown as a banner in the UI).
 replaces the given groups in memory, validated together with the rest first),
 `GET /api/timetable?location=&date=`, `GET /api/roster?start=&days=`,
 `PUT /api/training` (`equipment_needing_training`: list and/or `skills`: `{staff_id: [equipment]}`; only the staff named change),
+`PUT /api/room-capacity` (`room_id`, `capacity`: 1-20),
 `PUT /api/presence` (`role`, `person_id`, `location_id` or null, `date`/`dates`),
 `PUT /api/bookings/<id>/staff` (`{"staff": {step: staff_id | null}}`: name or clear who does a step),
 `PUT /api/availability` (block/unblock a doctor/staff/room range, optional weekly repeat),

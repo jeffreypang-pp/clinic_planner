@@ -142,6 +142,9 @@
   .tt-row.total-row { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
   .tt-row.total-row .tt-label { font-weight: 600; }
   .tt-row.skill-head { margin-top: 4px; }
+  .tt-label label.cap { display: inline-flex; flex-direction: row; align-items: center; gap: 2px; margin-left: 6px; font-size: 12px; }
+  .tt-label label.cap input { width: 44px; padding: 1px 3px; }
+  .cell.free.partly { background: color-mix(in srgb, var(--booked) 30%, var(--free)); text-align: center; line-height: 24px; font-weight: 600; }
   .tt-row.skill-row .tt-label { padding-left: 22px; }
   .cell.tot { text-align: center; line-height: 26px; font-size: 11px; font-weight: 700; }
   .cell.tot.none { background: transparent; border: 1px dashed var(--line); }
@@ -457,7 +460,7 @@ async function viewTimetable() {
     const tickTitle = r.here ? `In ${t.location} today. Untick if they are not in any location.`
       : r.at ? `At ${locName(r.at)} today. Tick to move them to ${t.location}.` : `Not in any location today. Tick to put them in ${t.location}.`;
     const tick = role === "room" ? "" : `<input type="checkbox" class="here" data-role="${role}" data-id="${r.id}" ${r.here ? "checked" : ""} title="${esc(tickTitle)}">`;
-    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name + (r.usual ? " — usually at " + locName(r.usual) : "") + (role === "staff" && byId(S.clinic.staff, r.id)?.skills?.length ? " — trained: " + byId(S.clinic.staff, r.id).skills.map(x => x.toUpperCase()).join(", ") : "") + (r.here ? " — here today" : r.at ? " — at " + locName(r.at) + " today" : role === "room" ? "" : " — not in any location today"))}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+    let html = `<div class="tt-row" data-kind="${role}" data-id="${r.id}" style="${cols}"><div class="tt-label" title="${esc(r.name + (r.usual ? " — usually at " + locName(r.usual) : "") + (role === "staff" && byId(S.clinic.staff, r.id)?.skills?.length ? " — trained: " + byId(S.clinic.staff, r.id).skills.map(x => x.toUpperCase()).join(", ") : "") + (r.here ? " — here today" : r.at ? " — at " + locName(r.at) + " today" : role === "room" ? "" : " — not in any location today"))}">${tick}${esc(r.name)} ${sub ? `<small>${esc(sub)}</small>` : ""}${role === "room" ? `<label class="cap" title="How many treatments can be in ${esc(r.name)} at the same time">× <input type="number" min="1" max="20" value="${r.capacity || 1}" data-cap="${esc(r.id)}"></label>` : ""}</div>`;
     for (let i = lo; i < hi; ) {
       const c = r.cells[i];
       if (c.startsWith("booked:")) {  // merge consecutive slots of the same booking
@@ -469,7 +472,12 @@ async function viewTimetable() {
         i = j; continue;
       }
       const time = slotStr(i);
-      if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free${S.editAvail ? "" : " (click to use as the start time of the next treatment)"}"></div>`;
+      if (c.startsWith("use:") || c.startsWith("full:")) {   // a room that holds several treatments at once: how many are in it
+        const [kind, n, cap] = c.split(":"), who = t.bookings.filter(b => b.room_id === r.id && b.start <= time && time < b.end).map(b => `${b.start}-${b.end} ${b.treatment}`).join("\n");
+        html += kind === "full" ? `<div class="cell booked" style="text-align:center;padding:0" title="${time} — room full (${n}/${cap})\n${esc(who)}">${n}</div>`
+          : `<div class="cell free partly" data-start="${time}" title="${time} — ${n} of ${cap} places taken${S.editAvail ? "" : " (click to use as the start time of the next treatment)"}\n${esc(who)}">${n}</div>`;
+      }
+      else if (c === "free") html += `<div class="cell free" data-start="${time}" title="${time} — free${S.editAvail ? "" : " (click to use as the start time of the next treatment)"}"></div>`;
       else if (c.startsWith("away:")) html += `<div class="cell away" title="${time} — at ${esc(locName(c.slice(5)))}">${esc(locName(c.slice(5))[0])}</div>`;
       else html += `<div class="cell ${c}" title="${time} — ${{off: "not in any location today", closed: "closed", blocked: "blocked (unavailable)"}[c]}"></div>`;
       i++;
@@ -553,7 +561,12 @@ async function viewTimetable() {
     if (!S.issues.length) banner("ok", `Cleared ${r.bookings} booking(s) and ${r.blocks} blocked time(s) at ${esc(where)}. Press Save… to ${toDisk()}.`, 5000);
   });
   if (S.editAvail) setupEditing(lo, n);
-  $(".tt").onchange = async e => {  // the tick boxes
+  $(".tt").onchange = async e => {  // the tick boxes, and a room's capacity
+    const cap = e.target.closest("input[data-cap]");
+    if (cap) return guard(async () => {
+      try { await api("PUT", "/api/room-capacity", { room_id: cap.dataset.cap, capacity: Math.round(+cap.value) }); }
+      finally { await loadClinic(); await viewTimetable(); }
+    });
     const cb = e.target.closest("input.here"); if (!cb) return;
     try {
       const r = await api("PUT", "/api/presence", { role: cb.dataset.role, person_id: cb.dataset.id, date: S.date,
