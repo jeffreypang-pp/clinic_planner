@@ -226,7 +226,7 @@
 <main id="main"></main>
 
 <script>
-const TABS = [["timetable", "Timetable"], ["roster", "Roster & bookings"], ["training", "Staff training"], ["setup", "Setup & save"]];
+const TABS = [["timetable", "Timetable"], ["roster", "Roster & bookings"], /* ["training", "Staff training"], (switched off for now; viewTraining is kept) */ ["setup", "Setup & save"]];
 const S = { stateless: false, auth: false, state: null, list: { items: [], last: null, summary: "" }, editAvail: false, sel: null, clinic: null, issues: [], tab: "timetable", date: null, location: null, tt: null,
             rosterForm: { who: null, location: "", from: null, to: null, days: [0,1,2,3,4,5,6] }, weekOf: null, setupGroup: "resources" };
 

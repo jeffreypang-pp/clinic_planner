@@ -85,12 +85,10 @@
       }
     }
   ],
-  "equipment_needing_training": ["body_machine"],
   "staff": [
     {
       "id": "kai_ping",
-      "name": "Kai Ping",
-      "skills": ["body_machine"]
+      "name": "Kai Ping"
     },
     {
       "id": "aurore",
